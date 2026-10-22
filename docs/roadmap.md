@@ -244,13 +244,19 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 * Scale (`benchmarks/bench_scale.d`, R=8, Apple Silicon, `-O3`): 2.0M cells (1756x1139) generate in ~84 s (~42 us/cell, linear) with ~7 MB peak RSS (4 MB map + 1.6 MB solver arena). About 12% of grids still fail before Phase 6 recovery. Time, not memory, is the limit; Phase 9 targets it.
 
 ### Phase 6: Layered Recovery System & Island Orchestration
-* [ ] Create `src/wfc/recovery.d`:
+* [x] Create `src/wfc/recovery.d`:
   - Local-WFC: Carve radius-2 sub-region around failed coordinates, re-solve locally with relaxed boundary conditions.
   - Drop Phase / Mountain Fallback: Sort unresolvable constraints by proximity to failure, drop constraint, and flag coordinate for mountain/cliff placement.
-* [ ] Create `src/wfc/map_generator.d`:
+* [x] Create `src/wfc/map_generator.d`:
   - Island perimeter ocean seeding (`addWaterEdgeSeeds`, `getMapCornerOceanSeeds`).
   - Sequentially solve all 19 grids, stitching boundaries seamlessly.
   - Global cell map tracking all ~4,123 tiles.
+
+**Phase 6 notes (implemented):**
+* `recovery.d` runs the tiers per grid: solver-internal unfixing, then up to 5 local-WFC re-solves (radius 2, centered on the conflict source or the nearest boundary cell), then dropping the nearest boundary cells one at a time. Dropped cells are flagged in `TileMap` (`isMountain`) for Phase 7 to decorate. If every boundary is dropped it re-rolls up to 20 times, giving up the forced seeds halfway.
+* Rectangular maps replace the 19-grid island: ocean seeds sit on the map perimeter every 6 cells, with one grass seed at the center (`GenOptions`). Forced seeds are hints; a seed the boundary has already ruled out is skipped rather than overriding it.
+* Measured (`bench_scale`, R=8): 2,000,084 cells (1756x1139) all solved, 0 failed grids, 1,515 local-WFC attempts, 17 dropped seams (17 mountain cells), ~103 s, 7.4 MB peak RSS.
+
 
 ### Phase 7: Procedural Noise & Decoration Placement
 * [ ] Create `src/wfc/decorations.d`:

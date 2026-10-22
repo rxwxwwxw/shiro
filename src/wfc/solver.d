@@ -156,6 +156,10 @@ struct Solver {
         return n;
     }
 
+    const(AdjacencyRules)* rulesPtr() const @nogc nothrow pure @safe {
+        return rules;
+    }
+
     /// State for a state ID.
     TileState rulesState(int id) const @nogc nothrow pure @trusted {
         return rules.states[id];
@@ -220,20 +224,26 @@ struct Solver {
             while (true) {
                 if (!init())
                     return R.err(SolveError.InvalidInput);
+                // Boundary first, so forced collapses can be checked against it.
+                foreach (i; 0 .. numFixed)
+                    push(numSolve + i);
+                bool seeded = !initConflict && propagate();
+                // Forced collapses are hints: skipped if the boundary (or an earlier seed) already
+                // ruled the state out.
                 foreach (ref ic; initialCollapses) {
+                    if (!seeded)
+                        break;
                     immutable idx = find(ic.coord);
                     if (idx < 0 || idx >= numSolve || st.cells[idx].collapsed)
                         continue;
                     immutable id = rules.stateId(ic.state.tile, ic.state.rotation, ic.state.level);
-                    if (id < 0)
+                    if (id < 0 || !st.cells[idx].has(id))
                         continue;
                     collapseCell(idx, id);
                     push(idx);
+                    seeded = propagate();
                 }
-                foreach (i; 0 .. numFixed)
-                    push(numSolve + i);
-
-                if (!initConflict && propagate())
+                if (seeded)
                     break;
                 clearStack();
                 if (unfixBudget == 0 || !unfixNeighborOfConflict(lookup))

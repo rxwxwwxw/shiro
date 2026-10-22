@@ -42,8 +42,8 @@ int main(string[] args) {
     printf("radius %d, grid cells %d, solver arena %d KiB, rules %d KiB\n", radius,
             cast(int)cellsPerGrid(radius), cast(int)(Solver.storageBytes / 1024),
             cast(int)(AdjacencyRules.sizeof / 1024));
-    printf("%10s %9s %8s %10s %9s %8s %8s %8s\n", "cells".ptr, "map".ptr, "ms".ptr, "us/cell".ptr,
-            "grids".ptr, "failed".ptr, "unfixed".ptr, "mapKiB".ptr);
+    printf("%10s %9s %8s %9s %7s %6s %7s %6s %8s %7s\n", "cells".ptr, "map".ptr, "ms".ptr,
+            "us/cell".ptr, "grids".ptr, "failed".ptr, "local".ptr, "drop".ptr, "mountain".ptr, "mapKiB".ptr);
     foreach (target; sizes[0 .. nSizes]) {
         auto solver = Solver(&rules);
         auto map = TileMap(MapRect.withAspect(target, 16, 9));
@@ -51,10 +51,11 @@ int main(string[] args) {
         immutable t0 = MonoTime.currTime;
         immutable st = generateMap(map, radius, solver, rng);
         immutable us = (MonoTime.currTime - t0).total!"usecs";
-        printf("%10d %4dx%-4d %8d %10.2f %9d %8d %8d %8d\n", cast(int)map.rect.cellCount,
+        printf("%10d %4dx%-4d %8d %9.2f %7d %6d %7d %6d %8d %7d\n", cast(int)map.rect.cellCount,
                 map.rect.cols, map.rect.rows, cast(int)(us / 1000),
                 cast(double)us / map.rect.cellCount, cast(int)st.gridsSolved,
-                cast(int)st.gridsFailed, cast(int)st.unfixedCells, cast(int)(map.bytes / 1024));
+                cast(int)st.gridsFailed, cast(int)st.recovery.localAttempts,
+                cast(int)st.recovery.dropped, cast(int)map.countMountains, cast(int)(map.bytes / 1024));
     }
     return 0;
 }

@@ -6,7 +6,7 @@
 // keeps a 2-million-cell map at 4 MB, independent of the solver's per-grid working memory.
 module wfc.tile_map;
 
-import core.stdc.stdlib : malloc, free;
+import core.stdc.stdlib : calloc, malloc, free;
 import core.stdc.string : memset;
 import wfc.grid_connector : MapRect;
 import wfc.hex;
@@ -14,6 +14,8 @@ import wfc.hex;
 struct TileMap {
     MapRect rect;
     private short* data;
+    /// One bit per cell: cells where an unresolvable seam was masked (mountain placement).
+    private ulong* mountain;
 
     @disable this(this);
 
@@ -24,14 +26,18 @@ struct TileMap {
         data = cast(short*)malloc(bytes);
         assert(data !is null, "tile map allocation failed");
         memset(data, 0xFF, bytes); // every cell starts at -1 (unsolved)
+        immutable words = (rect.cellCount + 63) / 64;
+        mountain = cast(ulong*)calloc(words, ulong.sizeof);
+        assert(mountain !is null, "tile map allocation failed");
     }
 
     ~this() @nogc nothrow @trusted {
         free(data);
+        free(mountain);
     }
 
     size_t bytes() const @nogc nothrow pure @safe {
-        return rect.cellCount * short.sizeof;
+        return rect.cellCount * short.sizeof + (rect.cellCount + 63) / 64 * ulong.sizeof;
     }
 
     private size_t index(const CubeCoord c) const @nogc nothrow pure @safe {
@@ -51,6 +57,28 @@ struct TileMap {
         data[index(c)] = cast(short)stateId;
     }
 
+    void setMountain(const CubeCoord c) @nogc nothrow @trusted {
+        assert(rect.contains(c));
+        immutable i = index(c);
+        mountain[i >> 6] |= 1UL << (i & 63);
+    }
+
+    bool isMountain(const CubeCoord c) const @nogc nothrow @trusted {
+        if (!rect.contains(c))
+            return false;
+        immutable i = index(c);
+        return (mountain[i >> 6] & (1UL << (i & 63))) != 0;
+    }
+
+    size_t countMountains() const @nogc nothrow @trusted {
+        import core.bitop : popcnt;
+
+        size_t n = 0;
+        foreach (i; 0 .. (rect.cellCount + 63) / 64)
+            n += popcnt(mountain[i]);
+        return n;
+    }
+
     size_t countSolved() const @nogc nothrow @trusted {
         size_t n = 0;
         foreach (i; 0 .. rect.cellCount)
@@ -62,7 +90,7 @@ struct TileMap {
 
 @nogc nothrow unittest {
     auto m = TileMap(MapRect(10, 6));
-    assert(m.bytes == 120 && m.countSolved == 0);
+    assert(m.bytes == 120 + 8 && m.countSolved == 0 && m.countMountains == 0);
     immutable c = offsetToCube(3, 4);
     assert(m.get(c) == -1);
     m.set(c, 77);
@@ -78,4 +106,12 @@ struct TileMap {
     foreach (row; 0 .. 6)
         foreach (col; 0 .. 10)
             assert(m.get(offsetToCube(col, row)) == row * 10 + col);
+    // Mountain flags are independent of tile data and bounds-safe on read.
+    immutable mc = offsetToCube(9, 5);
+    assert(!m.isMountain(mc));
+    m.setMountain(mc);
+    assert(m.isMountain(mc) && m.countMountains == 1);
+    assert(!m.isMountain(offsetToCube(8, 5)));
+    assert(!m.isMountain(offsetToCube(-4, 2)));
+    assert(m.get(mc) == 5 * 10 + 9);
 }
