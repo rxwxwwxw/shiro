@@ -36,6 +36,9 @@ struct MeshVert {
 struct MeshOptions {
     bool decorations = true;
     bool outlines = false;
+    /// Show the bevelled rim around each model tile top (the seams between tiles); off lights the
+    /// rim like the flat top so tiles blend into a continuous surface.
+    bool tileEdges = false;
     /// Debug view: color tops by elevation instead of terrain (the JS "Level Colors").
     bool levelColors = false;
     /// Use the terrain model's meshes and texture when a model is supplied to `build`.
@@ -132,6 +135,10 @@ private struct Chunk {
 }
 
 /// Cells on screen up to which each level of detail is used.
+/// Vertical extent of a model tile's bevelled rim, below its top face.
+private enum float rimDepth = 0.06f;
+/// Texture offset from a tile's rim to its top face in hex-terrain.glb.
+private immutable float[2] rimUv = [0.016f, -0.016f];
 private enum float modelMaxCells = 8000, flatMaxCells = 12000, plainMaxCells = 30000;
 /// Cached chunk geometry above this many bytes is trimmed to what the last frame drew.
 /// Draw-call CPU time and whole-frame time the viewer tries to stay under, in ms (24 keeps 60 Hz
@@ -165,6 +172,8 @@ struct MapMesh {
     private size_t nOv, capOv, nOi, capOi;
     private size_t rowStart;
     private bool oom;
+    /// Set while a tile top is added: rim vertices take the top's shading.
+    private bool flatRim;
     private ModelVert* mv;
     private int* remap;
     private TriKey* order;
@@ -892,14 +901,24 @@ struct MapMesh {
         }
         immutable c = cos(theta), s = sin(theta);
         foreach (i; 0 .. m.nVerts) {
+            immutable rim = flatRim && m.nrm[3 * i + 1] > 0.6f && m.nrm[3 * i + 1] < 0.8f
+                && m.pos[3 * i + 1] > m.hi[1] - rimDepth;
             immutable x = m.pos[3 * i] * scale, y = m.pos[3 * i + 1] * scale * yScale, z = m.pos[3 * i + 2] * scale;
             mv[i].x = px + x * c + z * s;
             mv[i].y = py + y;
             mv[i].z = pz - x * s + z * c;
             mv[i].slope = (m.pos[3 * i + 1] + slopeShift) * 0.5f;
-            immutable nx = m.nrm[3 * i] * c + m.nrm[3 * i + 2] * s;
-            immutable nz = -m.nrm[3 * i] * s + m.nrm[3 * i + 2] * c;
-            float d = nx * lightDir[0] + m.nrm[3 * i + 1] * lightDir[1] + nz * lightDir[2];
+            mv[i].du = rim ? rimUv[0] : 0;
+            mv[i].dv = rim ? rimUv[1] : 0;
+            float mx = m.nrm[3 * i], my = m.nrm[3 * i + 1], mz = m.nrm[3 * i + 2];
+            // The tile's 45 degree rim, within a hair of the top, is what shows as lines between tiles.
+            if (rim) {
+                mx = mz = 0;
+                my = 1;
+            }
+            immutable nx = mx * c + mz * s;
+            immutable nz = -mx * s + mz * c;
+            float d = nx * lightDir[0] + my * lightDir[1] + nz * lightDir[2];
             d = d < 0 ? 0 : (d > lightFull ? 1 : d / lightFull);
             // Baked occlusion: surfaces low on a model (wall bottoms, creases at the foot of props) are
             // darker, a cheap stand-in for the reference's screen-space ambient occlusion.
@@ -943,7 +962,8 @@ struct MapMesh {
                 immutable slot = variant * m.nVerts + vi;
                 if (remap[slot] < 0)
                     remap[slot] = vert(IsoPoint(mv[vi].x, mv[vi].z * squash - (mv[vi].y - 1.0f) * yLift),
-                            mv[vi].rgba, m.uv[2 * vi], (m.uv[2 * vi + 1] + variant) * invVariants);
+                            mv[vi].rgba, m.uv[2 * vi] + mv[vi].du, (m.uv[2 * vi + 1] + mv[vi].dv + variant)
+                            * invVariants);
                 out_[j] = remap[slot];
             }
             tri(out_[0], out_[1], out_[2]);
@@ -968,8 +988,10 @@ struct MapMesh {
         immutable theta = -cast(int)st.rotation * (3.14159265f / 3);
         if (st.level >= 1)
             addModel(ts.bottom, cx, tileY, cz, theta, 1, tileY, white, lvl);
+        flatRim = !opt.tileEdges;
         addModel(ts.tile[st.tile], cx, tileSurface + tileY, cz, theta, 1, 1, opt.levelColors
                 ? levelColor[st.level] : white, lvl, 0, st.tile == waterTile);
+        flatRim = false;
         if (isCoast[st.tile] && opt.decorations)
             addShoreFoam(ts.tile[st.tile], cx, tileSurface + tileY, cz, theta);
         if (!opt.decorations)
@@ -1111,6 +1133,8 @@ private struct ModelVert {
     /// Elevation contribution of this vertex to the texture blend.
     float slope;
     uint rgba;
+    /// Texture coordinate shift (a tile rim samples the texel next to the top's).
+    float du, dv;
 }
 
 private struct TriKey {

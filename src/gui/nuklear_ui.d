@@ -148,6 +148,8 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     if (haveModel)
         meshChanged |= checkbox(ctx, "Hex-Map-WFC models", st.mesh.textured);
     meshChanged |= checkbox(ctx, "Cell outlines", st.mesh.outlines);
+    if (haveModel)
+        meshChanged |= checkbox(ctx, "Tile edges", st.mesh.tileEdges);
     meshChanged |= checkbox(ctx, "Level colors", st.mesh.levelColors);
     checkbox(ctx, "Animate water", st.animateWater);
     checkbox(ctx, "Vignette", st.vignette);
