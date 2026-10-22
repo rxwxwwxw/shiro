@@ -96,6 +96,51 @@ int tileIdByName(string name) @nogc nothrow pure @safe {
     return -1;
 }
 
+private bool startsWith(string s, string prefix) @nogc nothrow pure @safe {
+    return s.length >= prefix.length && s[0 .. prefix.length] == prefix;
+}
+
+/// Ground creeps can walk on this tile: grass, roads, slopes and river crossings (bridges).
+/// Water, coast, river and cliff tiles block them.
+bool groundWalkable(size_t tile) @nogc nothrow pure @safe {
+    return groundTable[tile];
+}
+
+/// Swimming creeps can cross this tile: open water, coast and river tiles.
+bool swimmable(size_t tile) @nogc nothrow pure @safe {
+    return swimTable[tile];
+}
+
+private immutable bool[numTiles] groundTable = () {
+    bool[numTiles] t;
+    foreach (i, ref d; tileList)
+        t[i] = d.name == "GRASS" || startsWith(d.name, "ROAD_") || d.name == "GRASS_SLOPE_HIGH"
+            || d.name == "GRASS_SLOPE_LOW" || startsWith(d.name, "RIVER_CROSSING");
+    return t;
+}();
+
+private immutable bool[numTiles] swimTable = () {
+    bool[numTiles] t;
+    foreach (i, ref d; tileList)
+        t[i] = d.name == "WATER" || startsWith(d.name, "COAST_") || (startsWith(d.name, "RIVER_")
+                && !startsWith(d.name, "RIVER_CROSSING"));
+    return t;
+}();
+
+@nogc nothrow pure @safe unittest {
+    assert(groundWalkable(tileIdByName("GRASS")) && groundWalkable(tileIdByName("ROAD_D")));
+    assert(groundWalkable(tileIdByName("ROAD_A_SLOPE_LOW")) && groundWalkable(tileIdByName("RIVER_CROSSING_A")));
+    assert(!groundWalkable(tileIdByName("WATER")) && !groundWalkable(tileIdByName("RIVER_A")));
+    assert(!groundWalkable(tileIdByName("COAST_B")) && !groundWalkable(tileIdByName("GRASS_CLIFF")));
+    assert(swimmable(tileIdByName("WATER")) && swimmable(tileIdByName("RIVER_INTO_COAST")));
+    assert(!swimmable(tileIdByName("RIVER_CROSSING_B")) && !swimmable(tileIdByName("GRASS")));
+    size_t either = 0;
+    foreach (i; 0 .. numTiles)
+        if (groundWalkable(i) || swimmable(i))
+            either++;
+    assert(either == numTiles - 4); // only the four cliff tiles block both
+}
+
 /// Rotate edges clockwise by `rotation` steps of 60 degrees (edge i moves to slot i + rotation).
 EdgeType[6] rotateHexEdges(const EdgeType[6] edges, int rotation) @nogc nothrow pure @safe {
     EdgeType[6] r;

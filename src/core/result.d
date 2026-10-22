@@ -10,7 +10,9 @@ enum EngineError : int {
     MapSeedExhausted,
     BufferOverflow,
     ResourceNotFound,
-    InitializationFailed
+    InitializationFailed,
+    PlacementFailed,
+    RoutingFailed
 }
 
 struct Result(T, E = EngineError) {

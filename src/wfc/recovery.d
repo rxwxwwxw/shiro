@@ -78,9 +78,10 @@ private struct Attempt {
 }
 
 private Attempt attempt(ref Solver solver, ref TileMap map, const CubeCoord[] cells,
-        const FixedCell[] fixed, const FixedCell[] initial, ref Random rng, ref RecoveryStats stats) @nogc nothrow @trusted {
+        const FixedCell[] fixed, const FixedCell[] initial, ref Random rng, ref RecoveryStats stats,
+        CellConstraints cons) @nogc nothrow @trusted {
     scope TileLookup lookup = (const CubeCoord c) => map.get(c);
-    auto r = solver.solve(cells, fixed, initial, rng, lookup);
+    auto r = solver.solve(cells, fixed, initial, rng, lookup, cons.mask);
     if (r.isOk) {
         stats.backtracks += r.value.backtracks;
         commit(solver, map, stats);
@@ -92,7 +93,8 @@ private Attempt attempt(ref Solver solver, ref TileMap map, const CubeCoord[] ce
 
 /// Mini-WFC on the radius-2 region around `center`: every mapped cell in the region is re-solved
 /// against its (hard) outside neighbors. Returns true if the region was re-solved and written.
-private bool localWfc(ref Solver local, ref TileMap map, const CubeCoord center, ref Random rng, ref RecoveryStats stats) @nogc nothrow @trusted {
+private bool localWfc(ref Solver local, ref TileMap map, const CubeCoord center, ref Random rng,
+        ref RecoveryStats stats, CellConstraints cons) @nogc nothrow @trusted {
     CubeCoord[cellsInRadius(localRegionRadius)] ball = void;
     immutable nb = cubeCoordsInRadius(center, localRegionRadius, ball[]);
     CubeCoord[cellsInRadius(localRegionRadius)] region = void;
@@ -108,7 +110,7 @@ private bool localWfc(ref Solver local, ref TileMap map, const CubeCoord center,
     foreach (i; 0 .. nf)
         fixed[i].soft = false;
 
-    auto r = local.solve(region[0 .. n], fixed[0 .. nf], null, rng);
+    auto r = local.solve(region[0 .. n], fixed[0 .. nf], null, rng, null, cons.mask);
     if (!r.isOk)
         return false;
     stats.backtracks += r.value.backtracks;
@@ -123,7 +125,9 @@ private void removeFixed(FixedCell[] fixed, ref size_t nf, size_t idx) @nogc not
     fixed[idx] = fixed[--nf];
 }
 
-private int nearestFixed(const FixedCell[] fixed, size_t nf, const CubeCoord to, const CubeCoord[] skip) @nogc nothrow pure @safe {
+/// Nearest fixed cell to `to` not in `skip`; protected cells rank behind every unprotected one.
+private int nearestFixed(const FixedCell[] fixed, size_t nf, const CubeCoord to,
+        const CubeCoord[] skip, CellConstraints cons) @nogc nothrow @trusted {
     int best = -1;
     int bestDist = int.max;
     foreach (i; 0 .. nf) {
@@ -133,7 +137,9 @@ private int nearestFixed(const FixedCell[] fixed, size_t nf, const CubeCoord to,
                 skipped = true;
         if (skipped)
             continue;
-        immutable d = cubeDistance(fixed[i].coord, to);
+        int d = cubeDistance(fixed[i].coord, to);
+        if (cons.protect !is null && cons.protect(fixed[i].coord))
+            d += 1 << 20;
         if (d < bestDist) {
             bestDist = d;
             best = cast(int)i;
@@ -145,12 +151,13 @@ private int nearestFixed(const FixedCell[] fixed, size_t nf, const CubeCoord to,
 /// Solves the grid `cells` (a hex ball around `center`, possibly clipped) against the map with
 /// the full recovery pipeline and writes the result. Returns false only if every tier failed.
 bool solveWithRecovery(ref Solver main, ref Solver local, ref TileMap map, const CubeCoord[] cells,
-        const CubeCoord center, int radius, const FixedCell[] initial, ref Random rng, ref RecoveryStats stats) @nogc nothrow @trusted {
+        const CubeCoord center, int radius, const FixedCell[] initial, ref Random rng,
+        ref RecoveryStats stats, CellConstraints cons = CellConstraints.init) @nogc nothrow @trusted {
     FixedCell[maxFixedCells] fixed = void;
     size_t nf = gatherFixed(map, cells, center, radius, main, fixed[]);
 
     // Tier 1 (unfixing happens inside the solver).
-    auto a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats);
+    auto a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats, cons);
     if (a.ok)
         return true;
 
@@ -165,20 +172,20 @@ bool solveWithRecovery(ref Solver main, ref Solver local, ref TileMap map, const
         if (tries == 0 && a.error == SolveError.NeighborConflict && a.conflict.sourceIsFixed) {
             lc = a.conflict.source;
         } else {
-            ci = nearestFixed(fixed[], nf, a.conflict.failed, resolved[0 .. nResolved]);
+            ci = nearestFixed(fixed[], nf, a.conflict.failed, resolved[0 .. nResolved], cons);
             if (ci < 0)
                 break;
             lc = fixed[ci].coord;
         }
         resolved[nResolved++] = lc;
         stats.localAttempts++;
-        if (!localWfc(local, map, lc, rng, stats))
+        if (!localWfc(local, map, lc, rng, stats, cons))
             continue;
         stats.localSuccesses++;
 
         // The map changed under the boundary; rebuild it and retry.
         nf = gatherFixed(map, cells, center, radius, main, fixed[]);
-        a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats);
+        a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats, cons);
         if (a.ok)
             return true;
     }
@@ -187,11 +194,11 @@ bool solveWithRecovery(ref Solver main, ref Solver local, ref TileMap map, const
     CubeCoord[maxFixedCells] droppedCoords = void;
     size_t nDropped = 0;
     while (!a.ok && nf > 0) {
-        immutable idx = a.conflict.valid ? nearestFixed(fixed[], nf, a.conflict.failed, null) : 0;
+        immutable idx = a.conflict.valid ? nearestFixed(fixed[], nf, a.conflict.failed, null, cons) : 0;
         droppedCoords[nDropped++] = fixed[idx].coord;
         removeFixed(fixed[], nf, idx);
         stats.dropped++;
-        a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats);
+        a = attempt(main, map, cells, fixed[0 .. nf], initial, rng, stats, cons);
     }
 
     // Nothing left to drop: re-roll, then give up on the forced seeds.
@@ -199,7 +206,7 @@ bool solveWithRecovery(ref Solver main, ref Solver local, ref TileMap map, const
         if (a.ok)
             break;
         stats.freeRetries++;
-        a = attempt(main, map, cells, fixed[0 .. nf], i < maxFreeRetries / 2 ? initial : null, rng, stats);
+        a = attempt(main, map, cells, fixed[0 .. nf], i < maxFreeRetries / 2 ? initial : null, rng, stats, cons);
     }
     if (!a.ok)
         return false;

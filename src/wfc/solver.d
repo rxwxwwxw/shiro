@@ -54,6 +54,20 @@ struct FixedCell {
 /// find the anchors of a cell that gets unfixed.
 alias TileLookup = int delegate(const CubeCoord) @nogc nothrow;
 
+/// Returns the set of states a cell may take, or null if the cell is unconstrained. Applied to
+/// every solve cell (including unfixed ones), e.g. to force planned roads.
+alias CellMaskLookup = const(StateSet)* delegate(const CubeCoord) @nogc nothrow;
+
+/// True for cells whose boundary constraint recovery should drop last (e.g. planned roads, where
+/// a dropped seam would put a mountain on the road).
+alias CellProtectLookup = bool delegate(const CubeCoord) @nogc nothrow;
+
+/// Optional per-cell constraints threaded through generation and recovery.
+struct CellConstraints {
+    CellMaskLookup mask;
+    CellProtectLookup protect;
+}
+
 struct PlacedTile {
     CubeCoord coord;
     TileState state;
@@ -201,8 +215,10 @@ struct Solver {
     /// neighbor becomes a solve cell and its own neighbors in the global map (found through
     /// `lookup`) become fixed anchors, so the unfixed cell stays compatible with the rest of the
     /// map. Result indexes of solve cells keep their input order; unfixed cells are appended.
+    /// `mask`, if given, restricts the possibilities of each solve cell.
     Result!(SolveStats, SolveError) solve(const CubeCoord[] solveCells, const FixedCell[] fixedCells,
-            const FixedCell[] initialCollapses, ref Random rng, scope TileLookup lookup = null) @nogc nothrow @trusted {
+            const FixedCell[] initialCollapses, ref Random rng, scope TileLookup lookup = null,
+            scope CellMaskLookup mask = null) @nogc nothrow @trusted {
         alias R = Result!(SolveStats, SolveError);
         lastConflict = Conflict.init;
         unfixedLen = 0;
@@ -222,7 +238,7 @@ struct Solver {
         foreach (attempt; 1 .. opt.maxTries + 1) {
             // Seed from boundary and forced collapses; unfix soft neighbors on contradiction.
             while (true) {
-                if (!init())
+                if (!init(mask))
                     return R.err(SolveError.InvalidInput);
                 // Boundary first, so forced collapses can be checked against it.
                 foreach (i; 0 .. numFixed)
@@ -350,7 +366,7 @@ struct Solver {
         return true;
     }
 
-    private bool init() @nogc nothrow @trusted {
+    private bool init(scope CellMaskLookup mask) @nogc nothrow @trusted {
         stackLen = trailLen = orderLen = decisionLen = 0;
         backtracks = 0;
         initConflict = false;
@@ -374,6 +390,21 @@ struct Solver {
             foreach (d; 0 .. numHexDirs) {
                 immutable n = find(st.coords[e].neighbor(cast(HexDir)d));
                 st.nbr[e][d] = (n >= 0 && (!isFixed || n < numSolve)) ? cast(short)n : cast(short)-1;
+            }
+        }
+
+        // Per-cell masks; restricted cells are queued so the restriction propagates.
+        if (mask !is null) {
+            foreach (i; 0 .. numSolve) {
+                const m = mask(st.coords[i]);
+                if (m is null)
+                    continue;
+                st.cells[i].possibilities.intersect(*m);
+                if (st.cells[i].possibilities.empty) {
+                    lastConflict = Conflict(true, st.coords[i], st.coords[i], false, HexDir.NE);
+                    initConflict = true;
+                }
+                push(i);
             }
         }
 
@@ -844,4 +875,39 @@ unittest {
     auto r = s.solve(cells[], fixed[], null, rng);
     assert(!r.isOk && r.error == SolveError.NeighborConflict);
     assert(s.unfixedCells.length == 0);
+}
+
+unittest {
+    // Per-cell masks: a masked cell only collapses to states in its mask, the restriction
+    // propagates to neighbors, and an empty mask is a NeighborConflict.
+    const rules = rulesForTest();
+    auto s = Solver(rules);
+    CubeCoord[maxSolveCells] buf;
+    auto cells = gridCells(3, buf);
+    immutable roadA = cast(ubyte)tileIdByName("ROAD_A");
+    StateSet only;
+    foreach (lvl; 0 .. levelsCount)
+        only.set(rules.stateId(roadA, 0, lvl)); // straight E-W road
+    StateSet none;
+    immutable center = CubeCoord(0, 0, 0);
+    scope CellMaskLookup mask = (const CubeCoord c) @nogc nothrow{ return c == center ? &only : null; };
+    foreach (seed; 1 .. 20) {
+        auto rng = Random(seed);
+        assert(s.solve(cells, null, null, rng, null, mask).isOk);
+        PlacedTile[maxSolveCells] out_;
+        immutable n = s.extract(out_[]);
+        checkConsistent(s, out_[0 .. n]);
+        foreach (i; 0 .. n) {
+            if (out_[i].coord == center)
+                assert(out_[i].state.tile == roadA && out_[i].state.rotation == 0);
+            // The east neighbor must continue the road.
+            if (out_[i].coord == center.neighbor(HexDir.E))
+                assert(rules.stateEdges[rules.stateId(out_[i].state.tile, out_[i].state.rotation, out_[i].state.level)][HexDir
+                        .W].type == EdgeType.road);
+        }
+    }
+    scope CellMaskLookup empty = (const CubeCoord c) @nogc nothrow{ return c == center ? &none : null; };
+    auto rng = Random(1);
+    auto r = s.solve(cells, null, null, rng, null, empty);
+    assert(!r.isOk && r.error == SolveError.NeighborConflict);
 }
