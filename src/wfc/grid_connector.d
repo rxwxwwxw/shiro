@@ -193,6 +193,69 @@ size_t gridCellsInRect(const GridCoord g, int radius, const MapRect rect, CubeCo
     return k;
 }
 
+/// Number of grids in a cluster of the given ring count: 1 + 3k(k+1) (19 for two rings).
+size_t gridsInCluster(int rings) @nogc nothrow pure @safe {
+    return cellsInRadius(rings);
+}
+
+/// The grids within `rings` rings of `center`, in sweep order (row by row, then column), written
+/// to `buf`. Two rings give the 19-grid island of the reference implementation.
+size_t clusterGrids(const GridCoord center, int rings, GridCoord[] buf) @nogc nothrow pure @safe {
+    immutable a = toAxial(center);
+    size_t n = 0;
+    foreach (dq; -rings .. rings + 1) {
+        immutable lo = -rings > -dq - rings ? -rings : -dq - rings;
+        immutable hi = rings < -dq + rings ? rings : -dq + rings;
+        foreach (dr; lo .. hi + 1) {
+            assert(n < buf.length);
+            buf[n++] = toOffset(GridAxial(a.gq + dq, a.gr + dr));
+        }
+    }
+    // Insertion sort by (z, x): neighbors north/west are solved before the grids that need them.
+    foreach (i; 1 .. n) {
+        immutable v = buf[i];
+        size_t j = i;
+        while (j > 0 && (buf[j - 1].z > v.z || (buf[j - 1].z == v.z && buf[j - 1].x > v.x))) {
+            buf[j] = buf[j - 1];
+            j--;
+        }
+        buf[j] = v;
+    }
+    return n;
+}
+
+/// Finds a center grid for a cluster whose cells all have non-negative offset coordinates, and
+/// the map rectangle that bounds it.
+void fitCluster(int rings, int radius, out GridCoord center, out MapRect rect) @nogc nothrow pure @safe {
+    GridCoord[64] gs = void;
+    CubeCoord[cellsInRadius(16)] cells = void;
+    foreach (k; 0 .. 64) {
+        immutable c = GridCoord(k, k);
+        immutable ng = clusterGrids(c, rings, gs[]);
+        int minC = int.max, minR = int.max, maxC = int.min, maxR = int.min;
+        foreach (i; 0 .. ng) {
+            immutable n = cubeCoordsInRadius(gridCenter(gs[i], radius), radius, cells[]);
+            foreach (j; 0 .. n) {
+                immutable o = cubeToOffset(cells[j]);
+                if (o.col < minC)
+                    minC = o.col;
+                if (o.row < minR)
+                    minR = o.row;
+                if (o.col > maxC)
+                    maxC = o.col;
+                if (o.row > maxR)
+                    maxR = o.row;
+            }
+        }
+        if (minC >= 0 && minR >= 0) {
+            center = c;
+            rect = MapRect(maxC + 1, maxR + 1);
+            return;
+        }
+    }
+    assert(false, "no non-negative placement found");
+}
+
 @nogc nothrow pure @safe unittest {
     // Grid neighbors: opposite round-trips, for both column parities and negative coordinates.
     foreach (x; -3 .. 4)
@@ -299,4 +362,23 @@ size_t gridCellsInRect(const GridCoord g, int radius, const MapRect rect, CubeCo
             total += n;
         }
     assert(total == rect.cellCount);
+}
+
+@nogc nothrow pure @safe unittest {
+    // The two-ring cluster has 19 distinct grids in sweep order, and fits a rectangle.
+    GridCoord[19] gs;
+    immutable n = clusterGrids(GridCoord(3, 3), 2, gs[]);
+    assert(n == 19 && gridsInCluster(2) == 19);
+    foreach (i; 1 .. n) {
+        assert(gs[i - 1].z < gs[i].z || (gs[i - 1].z == gs[i].z && gs[i - 1].x < gs[i].x));
+    }
+    GridCoord c;
+    MapRect r;
+    fitCluster(2, 8, c, r);
+    size_t total = 0;
+    CubeCoord[cellsInRadius(8)] buf;
+    immutable ng = clusterGrids(c, 2, gs[]);
+    foreach (i; 0 .. ng)
+        total += gridCellsInRect(gs[i], 8, r, buf[]);
+    assert(total == 19 * cellsInRadius(8)); // every cell inside the rectangle
 }

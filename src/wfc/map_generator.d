@@ -50,6 +50,24 @@ private size_t gridSeeds(const MapRect rect, const GenOptions opt, const CubeCoo
     return n;
 }
 
+private bool solveOneGrid(ref Solver solver, ref Solver local, ref TileMap map, GridCoord g, int radius,
+        GenOptions opt, ref Random rng, ref GenStats stats) @nogc nothrow @trusted {
+    CubeCoord[cellsInRadius(16)] cells = void;
+    immutable n = gridCellsInRect(g, radius, map.rect, cells[]);
+    if (n == 0)
+        return true;
+    FixedCell[maxSeedsPerGrid] seeds = void;
+    immutable ns = gridSeeds(map.rect, opt, cells[0 .. n], seeds[], *solver.rulesPtr);
+    if (solveWithRecovery(solver, local, map, cells[0 .. n], gridCenter(g, radius), radius,
+            seeds[0 .. ns], rng, stats.recovery)) {
+        stats.gridsSolved++;
+        return true;
+    }
+    stats.gridsFailed++;
+    stats.cellsUnsolved += n;
+    return false;
+}
+
 /// Fills `map` by sweeping grids of the given radius row by row (odd-q order), solving each
 /// against its already-solved neighbors with the 3-tier recovery pipeline.
 GenStats generateMap(ref TileMap map, int radius, ref Solver solver, ref Random rng, GenOptions opt = GenOptions.init) @nogc nothrow @trusted {
@@ -57,22 +75,18 @@ GenStats generateMap(ref TileMap map, int radius, ref Solver solver, ref Random 
     auto local = Solver(solver.rulesPtr, SolverOptions(5, 500));
     immutable b = gridBoundsForRect(map.rect, radius);
     foreach (z; b.minZ .. b.maxZ + 1)
-        foreach (x; b.minX .. b.maxX + 1) {
-            CubeCoord[cellsInRadius(16)] cells = void;
-            immutable g = GridCoord(x, z);
-            immutable n = gridCellsInRect(g, radius, map.rect, cells[]);
-            if (n == 0)
-                continue;
-            FixedCell[maxSeedsPerGrid] seeds = void;
-            immutable ns = gridSeeds(map.rect, opt, cells[0 .. n], seeds[], *solver.rulesPtr);
-            if (solveWithRecovery(solver, local, map, cells[0 .. n], gridCenter(g, radius), radius,
-                    seeds[0 .. ns], rng, stats.recovery))
-                stats.gridsSolved++;
-            else {
-                stats.gridsFailed++;
-                stats.cellsUnsolved += n;
-            }
-        }
+        foreach (x; b.minX .. b.maxX + 1)
+            solveOneGrid(solver, local, map, GridCoord(x, z), radius, opt, rng, stats);
+    return stats;
+}
+
+/// Solves an explicit list of grids in the given order (e.g. the 19-grid island).
+GenStats generateGrids(ref TileMap map, const GridCoord[] grids, int radius, ref Solver solver,
+        ref Random rng, GenOptions opt = GenOptions.init) @nogc nothrow @trusted {
+    GenStats stats;
+    auto local = Solver(solver.rulesPtr, SolverOptions(5, 500));
+    foreach (g; grids)
+        solveOneGrid(solver, local, map, g, radius, opt, rng, stats);
     return stats;
 }
 

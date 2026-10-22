@@ -270,15 +270,18 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 
 
 ### Phase 8: Tileset Audit Tool & Headless Integration Tests
-* [ ] Create `tests/tileset_audit.d`:
+* [x] Create `tests/tileset_audit.d`:
   - Port `tools/tileset-audit.js` to a headless D binary.
   - Audit every `(edgeType, level)` pair across all directions, reporting branching factors and asserting zero unresolvable dead ends.
-* [ ] Create `tests/test_wfc_single_grid.d`:
+* [x] Create `tests/test_wfc_single_grid.d`:
   - Solve single grids across 100 random seeds, verifying 100% solve rate without crashes.
-* [ ] Create `tests/test_wfc_multi_grid.d`:
+* [x] Create `tests/test_wfc_multi_grid.d`:
   - Solve complete 19-grid island maps across multiple seeds, verifying seamless tile edge matching across all grid boundaries.
-* [ ] Create `tests/test_runner.d`:
+* [x] Create `tests/test_runner.d`:
   - Central test runner with explicit timeout enforcement and memory monitoring.
+
+**Phase 8 notes (implemented):** run everything with `tests/run_tests.sh [--full] [--asan]`. The runner sets an explicit timeout (SIGALRM, exit 124) and checks peak RSS against a ceiling; `--full` runs 1,000 islands and 1,000 single grids. The 19-grid island (`clusterGrids`/`fitCluster`/`generateGrids`, 4,123 cells) is tested alongside 16:9 rectangles. The tileset audit also runs as a CLI with `-d-version=TilesetAuditCli`: 924 states, 0 dead edges, 0 unresolvable states, branching factor 12 min / 70 mean / 122 max. The audit follows the solver's exact-level matching for grass, unlike the JS tool, which lets grass match any level. Note: `-i` alone skips druntime's `core` package, so the script passes explicit `-i=core.*` for our modules.
+
 
 ### Phase 9: Microbenchmarks & Performance Optimization
 * [ ] Create `benchmarks/bench_wfc_solve.d`:
