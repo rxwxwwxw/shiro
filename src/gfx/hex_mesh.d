@@ -366,6 +366,18 @@ struct MapMesh {
         return true;
     }
 
+    /// Elevation level a cell's base sits at (0 for unsolved cells), the height of its footprint
+    /// hexagon on screen. False for cells outside the map.
+    bool cellLevel(int col, int row, out float level) const @nogc nothrow @trusted {
+        level = 0;
+        if (sess is null || col < 0 || row < 0 || col >= colCount || row >= rowCount)
+            return false;
+        immutable id = sess.tiles().get(offsetToCube(col, row));
+        if (id >= 0)
+            level = sess.rules.states[id].level;
+        return true;
+    }
+
     /// The GPU copy of an already built chunk, or null.
     void* gpuHandle(int row, int block) @nogc nothrow @trusted {
         return chunks[cast(size_t)row * blockCount + block].gpu;

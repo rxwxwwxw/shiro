@@ -29,6 +29,8 @@ struct ViewerConfig {
     bool classic;
     /// Screen pixels per world unit to start at (0 = fit the map).
     int zoom;
+    /// Cell to select at start (--select COL,ROW), -1 = none; with --zoom the view centers on it.
+    int selCol = -1, selRow = -1;
     /// Frames for the --bench frame-time run (0 = normal viewer).
     int bench;
     /// Multiplies measured draw times before quality adaptation, to try a slower machine.
@@ -52,6 +54,7 @@ immutable string usage = "usage: shiro_viewer [options]
   --screenshot PATH      render one frame to a BMP and exit
   --assets DIR           Hex-Map-WFC assets directory (default third-party/Hex-Map-WFC/public/assets)
   --zoom N               start zoomed to N pixels per world unit (default: fit the map)
+  --select COL,ROW       start with that cell selected (centered when --zoom is given)
   --bench N              time N still and N panning frames (ms), print, exit
   --slow N               pretend draws take N times longer (tests the quality adaptation)
   --classic              default SDL 2D renderer, CPU-expanded geometry (for comparison)
@@ -197,6 +200,20 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             if (!num() || n < 1)
                 return R.err(CliError.badNumber);
             cfg.slow = n;
+            break;
+        case "--select":
+            size_t comma = val.length;
+            foreach (k, ch; val)
+                if (ch == ',') {
+                    comma = k;
+                    break;
+                }
+            int col, row;
+            if (comma >= val.length || !parseInt(val[0 .. comma], col)
+                    || !parseInt(val[comma + 1 .. $], row) || col < 0 || row < 0)
+                return R.err(CliError.badNumber);
+            cfg.selCol = col;
+            cfg.selRow = row;
             break;
         case "--assets":
             if (val.length + 1 > cfg.assets.length)

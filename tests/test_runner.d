@@ -23,7 +23,7 @@ import tests.test_routes;
 import core.bitset, core.noise, core.random, core.result;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
-    viewer.commands, gfx.iso, gfx.camera, gfx.hex_mesh, wfc.solver, wfc.tile_data, wfc.tile_map;
+    viewer.commands, gfx.iso, gfx.camera, gfx.pick, gfx.hex_mesh, wfc.solver, wfc.tile_data, wfc.tile_map;
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];

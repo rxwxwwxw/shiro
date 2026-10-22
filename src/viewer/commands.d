@@ -75,6 +75,8 @@ struct ViewerState {
     bool vignette = true;
     /// Animated film grain over the map (the reference's noise pass); off by default, it reads as a dirty window.
     bool grain = false;
+    /// Cell under the pointer and the clicked cell (column, row); -1 when none.
+    int hoverCol = -1, hoverRow = -1, selCol = -1, selRow = -1;
     float fps = 0;
     size_t drawnVerts;
 }

@@ -11,6 +11,9 @@ import core.stdc.string : strlen;
 import gfx.camera;
 import gfx.glb;
 import gfx.hex_mesh;
+import gfx.highlight;
+import gfx.iso : cellCenter, levelStep, squash;
+import gfx.pick;
 import gfx.overview;
 import gfx.renderer;
 import gfx.sdl_handles;
@@ -23,6 +26,8 @@ import wfc.map_session;
 private enum int blendVariants = 5, blendSize = 512;
 /// Palette grading calibrated against pixels of the reference's own screenshot.
 private enum float paletteSaturation = 1.0f, paletteExposure = 0.9f;
+/// Pixels a press may travel and still count as a click; tallest cell top in levels, for picking.
+private enum float clickSlop = 4, maxCellHeight = 8;
 private enum string defaultAssets = "third-party/Hex-Map-WFC/public/assets";
 
 private struct Viewer {
@@ -40,11 +45,57 @@ private struct Viewer {
     bool running = true;
     bool dragging;
     int screenshotCount;
+    /// Pointer in render units, whether it is over the window, and where the current press began.
+    float mouseX = 0, mouseY = 0, downX = 0, downY = 0;
+    bool mouseIn, moved, clickPending;
 
     @disable this(this);
 
     ~this() @nogc nothrow {
         MapSession.release(session);
+    }
+
+    /// Finds the cell under the pointer (not while the panel owns it or a drag pans the map) and
+    /// turns a pending click into the selection.
+    void updatePicking(bool uiCapturing) @nogc nothrow @trusted {
+        state.hoverCol = state.hoverRow = -1;
+        if (mouseIn && !uiCapturing && !(dragging && moved) && mouseX >= camera.x0 && mesh.rows > 0) {
+            float heightAt(int c, int r) @nogc nothrow {
+                float level;
+                mesh.cellLevel(c, r, level);
+                return level;
+            }
+
+            int c, r;
+            if (pickCell(camera, mouseX, mouseY, session.tiles.rect.cols, session.tiles.rect.rows,
+                    maxCellHeight, &heightAt, c, r)) {
+                state.hoverCol = c;
+                state.hoverRow = r;
+            }
+        }
+        if (clickPending) {
+            state.selCol = state.hoverCol;
+            state.selRow = state.hoverRow;
+        }
+        clickPending = false;
+    }
+
+    /// Hover and selection markers over the map.
+    void drawMarkers(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        void mark(int col, int row, ref const Marker m) {
+            float level;
+            if (col < 0 || !mesh.cellLevel(col, row, level))
+                return;
+            float[2][6] pts;
+            cellOutline(camera, col, row, level, pts);
+            drawHexMarker(sdl, pts, m);
+        }
+
+        static immutable Marker hover = Marker(SDL_FColor(1, 1, 1, 0.20f), SDL_FColor(1, 1, 1, 0.85f), 2);
+        static immutable Marker selected = Marker(SDL_FColor(1, 0.85f, 0.3f, 0.18f), SDL_FColor(1, 0.8f, 0.2f, 1), 3);
+        if (state.hoverCol != state.selCol || state.hoverRow != state.selRow)
+            mark(state.hoverCol, state.hoverRow, hover);
+        mark(state.selCol, state.selRow, selected);
     }
 
     /// Regenerates the map from state.params; on bad params the old map stays.
@@ -58,6 +109,7 @@ private struct Viewer {
                 fprintf(stderr, "regenerate rejected (error %d): check sizes / radius / rings\n", r.error);
             return;
         }
+        state.selCol = state.selRow = state.hoverCol = state.hoverRow = -1;
         const st = r.value;
         printf("seed %u: %d x %d, %zu grids solved, %zu failed, %zu mountains, %.1f ms\n", state.params.seed,
                 session.tiles.rect.cols, session.tiles.rect.rows, st.gridsSolved, st.gridsFailed,
@@ -157,13 +209,27 @@ private struct Viewer {
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             dragging = !uiCapturing;
+            downX = e.button.x;
+            downY = e.button.y;
+            moved = false;
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
+            // A press that never travelled is a click, not a pan.
+            clickPending = dragging && !moved && e.button.button == 1;
             dragging = false;
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            if (dragging)
+            mouseX = e.motion.x;
+            mouseY = e.motion.y;
+            mouseIn = true;
+            if (dragging) {
                 camera.pan(e.motion.xrel, e.motion.yrel);
+                immutable dx = mouseX - downX, dy = mouseY - downY;
+                moved = moved || dx * dx + dy * dy > clickSlop * clickSlop;
+            }
+            break;
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+            mouseIn = false;
             break;
         case SDL_EVENT_MOUSE_WHEEL:
             if (!uiCapturing) {
@@ -400,6 +466,17 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         v.camera.cx = (v.mesh.minX + v.mesh.maxX) * 0.5f;
         v.camera.cy = (v.mesh.minY + v.mesh.maxY) * 0.5f;
     }
+    if (cfg.selCol >= 0 && cfg.selCol < v.session.tiles.rect.cols && cfg.selRow < v.session.tiles.rect.rows) {
+        v.state.selCol = cfg.selCol;
+        v.state.selRow = cfg.selRow;
+        if (cfg.zoom > 0) {
+            float x, z, level;
+            v.mesh.cellLevel(cfg.selCol, cfg.selRow, level);
+            cellCenter(cfg.selCol, cfg.selRow, x, z);
+            v.camera.cx = x;
+            v.camera.cy = z * squash - level * levelStep;
+        }
+    }
 
     immutable freq = cast(double)SDL_GetPerformanceFrequency();
     ulong last = SDL_GetPerformanceCounter();
@@ -420,6 +497,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             got = SDL_PollEvent(&e);
         }
         immutable wasPanel = v.state.showPanel;
+        v.updatePicking(capturing);
         drawPanel(ui, v.state, v.queue, *v.session, v.mesh, v.haveModel, viewH);
 
         bool screenshot = cfg.hasScreenshot;
@@ -454,6 +532,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         immutable wave = v.state.animateWater ? cast(float)(drawStart / freq * 2.2) : float.nan;
         v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
         immutable drawMs = cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
+        v.drawMarkers(ren.handle);
         v.state.drawnVerts = v.renderer.drawnVerts;
         // Full-screen blending is the one cost that scales with pixels, so it goes first when the
         // frame budget is tight.

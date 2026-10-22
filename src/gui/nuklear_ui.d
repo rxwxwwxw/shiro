@@ -8,7 +8,11 @@ import core.result : EngineError;
 import core.stdc.stdio : snprintf;
 import gfx.hex_mesh : Lod, MapMesh;
 import viewer.commands;
+import wfc.decorations : buildingDefs, DecoKind;
 import wfc.grid_connector : MapRect;
+import wfc.hex : HexDir, offsetToCube;
+import wfc.passability : NavFlag;
+import wfc.tile_data : tileList;
 import wfc.map_session;
 import wfc.placement : maxSinks, maxSources;
 
@@ -61,6 +65,90 @@ private bool checkbox(nk_context* ctx, const(char)* label, ref bool v) @nogc not
     return v != before;
 }
 
+private immutable char*[5] edgeNames = ["grass", "water", "road", "river", "coast"];
+private immutable char*[6] dirNames = ["NE", "E", "SE", "SW", "W", "NW"];
+
+/// Properties of the clicked cell (and a line for the hovered one).
+private void tileInfo(nk_context* ctx, ref const ViewerState st, ref const MapSession session) @nogc nothrow @trusted {
+    nk_layout_row_dynamic(ctx, 18, 1);
+    nk_label(ctx, "Tile", NK_TEXT_LEFT);
+    nk_layout_row_dynamic(ctx, 16, 1);
+    if (st.hoverCol >= 0)
+        labelf(ctx, "Hover: col %d, row %d", st.hoverCol, st.hoverRow);
+    if (st.selCol < 0) {
+        nk_label(ctx, "Click a tile to inspect it", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 8, 1);
+        return;
+    }
+    immutable c = offsetToCube(st.selCol, st.selRow);
+    labelf(ctx, "Cell col %d, row %d", st.selCol, st.selRow);
+    labelf(ctx, "Cube q %d, r %d, s %d", c.q, c.r, c.s);
+    immutable id = session.tiles.get(c);
+    if (id < 0) {
+        nk_label(ctx, "Unsolved cell", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 8, 1);
+        return;
+    }
+    const rules = session.rules;
+    immutable ts = rules.states[id];
+    const def = &tileList[ts.tile];
+    labelf(ctx, "Tile %.*s (state %d)", cast(int)def.name.length, def.name.ptr, cast(int)id);
+    labelf(ctx, "Rotation %d (%d deg), level %d", ts.rotation, ts.rotation * 60, ts.level);
+    if (def.levelIncrement != 0)
+        labelf(ctx, "Slope: rises %d level(s)", def.levelIncrement);
+    foreach (half; 0 .. 2) {
+        const e = &rules.stateEdges[id];
+        labelf(ctx, "%s %s %d  %s %s %d  %s %s %d", dirNames[3 * half],
+                edgeNames[(*e)[3 * half].type], (*e)[3 * half].level, dirNames[3 * half + 1],
+                edgeNames[(*e)[3 * half + 1].type], (*e)[3 * half + 1].level, dirNames[3 * half + 2],
+                edgeNames[(*e)[3 * half + 2].type], (*e)[3 * half + 2].level);
+    }
+    const deco = session.decorations.get(c);
+    final switch (deco.kind) {
+    case DecoKind.none:
+        nk_label(ctx, "Decoration: none", NK_TEXT_LEFT);
+        break;
+    case DecoKind.tree:
+        labelf(ctx, "Tree %c, density %d/3", 'A' + (deco.variant & 1), deco.extra & 3);
+        break;
+    case DecoKind.building:
+        labelf(ctx, "Building %.*s",
+                cast(int)buildingDefs[deco.variant].name.length, buildingDefs[deco.variant].name.ptr);
+        break;
+    case DecoKind.windmill:
+        nk_label(ctx, "Windmill", NK_TEXT_LEFT);
+        break;
+    case DecoKind.bridge:
+        nk_label(ctx, "Bridge", NK_TEXT_LEFT);
+        break;
+    case DecoKind.mountain:
+        nk_label(ctx, "Mountain (blocks movement)", NK_TEXT_LEFT);
+        break;
+    case DecoKind.source:
+        nk_label(ctx, "Creep source", NK_TEXT_LEFT);
+        break;
+    case DecoKind.sink:
+        nk_label(ctx, "Creep sink (goal)", NK_TEXT_LEFT);
+        break;
+    case DecoKind.rock:
+        nk_label(ctx, "Rock wall", NK_TEXT_LEFT);
+        break;
+    }
+    immutable nav = session.nav.get(c);
+    labelf(ctx, "Ground %s, water %s", (nav & NavFlag.ground) ? "yes".ptr : "no".ptr,
+            (nav & NavFlag.water) ? "yes".ptr : "no".ptr);
+    if (nav & NavFlag.road) {
+        immutable dirs = session.network.roadDirs(c);
+        char[32] buf = 0;
+        size_t n;
+        foreach (d; 0 .. 6)
+            if (dirs & (1 << d))
+                n += snprintf(buf.ptr + n, buf.length - n, "%s ", dirNames[d]);
+        labelf(ctx, "Road exits: %s", buf.ptr);
+    }
+    nk_layout_row_dynamic(ctx, 8, 1);
+}
+
 /// Draws the panel. Call between nk_input_end (done here) and NuklearContext.render.
 void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref const MapSession session,
         ref const MapMesh mesh, bool haveModel, float viewHeight) @nogc nothrow @trusted {
@@ -74,6 +162,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
         return;
     auto p = &st.params;
 
+    tileInfo(ctx, st, session);
     nk_layout_row_dynamic(ctx, 18, 1);
     nk_label(ctx, "Layout", NK_TEXT_LEFT);
     nk_layout_row_dynamic(ctx, 22, 2);
@@ -187,7 +276,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     labelf(ctx, "%.0f fps, %zu verts drawn", st.fps, st.drawnVerts);
     nk_layout_row_dynamic(ctx, 8, 1);
     nk_layout_row_dynamic(ctx, 16, 1);
-    nk_label(ctx, "Drag: pan   Wheel: zoom", NK_TEXT_LEFT);
+    nk_label(ctx, "Drag: pan   Wheel: zoom   Click: inspect", NK_TEXT_LEFT);
     nk_label(ctx, "R: new seed  F: fit  O: outlines", NK_TEXT_LEFT);
     nk_label(ctx, "Tab: toggle panel  Esc: quit", NK_TEXT_LEFT);
 }
