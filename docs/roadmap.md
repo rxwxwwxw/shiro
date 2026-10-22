@@ -301,11 +301,20 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 
 
 ### Phase 10: Verification, Formatting, and Sanitizers
-* [ ] Verify zero Phobos imports (`grep -rn "import std\." src/`).
-* [ ] Verify zero GC allocations in hot paths (`ldc2 -c -vgc -defaultlib=druntime-ldc src/wfc/*.d`).
-* [ ] Format all `.d` files using `dfmt`.
-* [ ] Run test suite under AddressSanitizer and LeakSanitizer:
+* [x] Verify zero Phobos imports (`grep -rn "import std\." src/`).
+* [x] Verify zero GC allocations in hot paths (`ldc2 -c -vgc -defaultlib=druntime-ldc src/wfc/*.d`).
+* [x] Format all `.d` files using `dfmt`.
+* [x] Run test suite under AddressSanitizer and LeakSanitizer:
   `ldc2 -fsanitize=address -defaultlib=druntime-ldc -fno-exceptions -g -unittest -run tests/test_runner.d`
+
+**Phase 10 results:**
+* `grep -rn "import std\." src tests benchmarks`: 0 hits.
+* `ldc2 -c -vgc` over `src/wfc/*.d src/core/*.d`: no output (no GC allocations). `-w -wi`: no warnings.
+* `dfmt` run over `src tests benchmarks`: no changes pending.
+* `tests/run_tests.sh --asan`: unit and integration suites pass under AddressSanitizer (which includes LeakSanitizer where the platform supports it).
+* `tests/run_tests.sh --full` (optimized build): 1,000/1,000 single grids, 1,000/1,000 19-grid islands (4,123 cells, 1,573 local-WFC attempts, 21 dropped seams over 14 islands) and 60/60 16:9 maps solved with every non-mountain seam matching; peak RSS 3 MiB.
+* Cross-compile checks pass for `x86_64-linux-gnu` and `x86_64-windows-msvc`.
+* Valgrind Memcheck was not run: it is not available on this macOS host. Run the command from `AGENTS.md` section 7.2 on Linux before release.
 
 ---
 
