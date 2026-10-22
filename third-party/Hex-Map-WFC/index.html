@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hex Map Toy</title>
+    <link rel="icon" href="./favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      #canvas {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        /* Disable long-press context menu and haptic feedback on mobile */
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+        touch-action: manipulation;
+      }
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #000;
+        z-index: 1000;
+      }
+      #loading img {
+        width: 48px;
+        height: 48px;
+        margin-bottom: 24px;
+      }
+      .lil-gui.gui-hidden { display: none; }
+      @media (orientation: portrait) {
+        #ui-menu { flex-direction: column !important; }
+      }
+      #title-overlay {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 1000;
+        font-family: 'Inter', sans-serif;
+        font-size: 14px;
+        color: rgba(255,255,255,0.8);
+        text-shadow: 0 1px 3px rgba(0,0,0,0.48);
+      }
+      #title-overlay .title-row {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      #title-overlay .title {
+        font-weight: 500;
+      }
+      #title-overlay a {
+        color: rgba(255,255,255,0.8);
+        text-decoration: underline;
+      }
+      #status-text {
+        margin-top: 8px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="title-overlay">
+      <div class="title-row">
+        <div class="title">Hex Map Toy</div>
+        <a href="https://felixturner.github.io/hex-map-wfc/article/" target="_blank">Read Article</a>
+        <a href="https://github.com/felixturner/hex-map-wfc" target="_blank">Source</a>
+      </div>
+      <div id="status-text"></div>
+    </div>
+    <div id="loading">
+      <img src="assets/loader.gif" alt="Loading" id="loader-gif" />
+    </div>
+    <canvas id="canvas"></canvas>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
