@@ -17,7 +17,11 @@ import gfx.pick;
 import gfx.overview;
 import gfx.renderer;
 import gfx.sdl_handles;
+import gfx.td_overlay;
 import gui.nuklear_ui;
+import td.bot;
+import td.defs : cellUnits, halfHex, rowUnits, Stage, ticksPerSecond, TowerKind;
+import td.game;
 import viewer.cli;
 import viewer.commands;
 import wfc.map_session;
@@ -42,6 +46,13 @@ private struct Viewer {
     Camera camera;
     ViewerState state;
     CommandQueue queue;
+    /// The tower defense game on the current map (inactive when the map has no roads).
+    Game game;
+    Bot bot;
+    GameQueue gameQueue;
+    TdOverlay overlay;
+    /// Real time not yet simulated, in seconds; the overlay interpolates by the leftover.
+    double simAcc = 0;
     bool running = true;
     bool dragging;
     int screenshotCount;
@@ -74,8 +85,13 @@ private struct Viewer {
             }
         }
         if (clickPending) {
-            state.selCol = state.hoverCol;
-            state.selRow = state.hoverRow;
+            if (state.buildKind >= 0 && state.hoverCol >= 0)
+                gameQueue.push(GameCommand(CommandType.place, cast(TowerKind)state.buildKind, 0,
+                        state.hoverCol, state.hoverRow));
+            else {
+                state.selCol = state.hoverCol;
+                state.selRow = state.hoverRow;
+            }
         }
         clickPending = false;
     }
@@ -93,7 +109,13 @@ private struct Viewer {
 
         static immutable Marker hover = Marker(SDL_FColor(1, 1, 1, 0.20f), SDL_FColor(1, 1, 1, 0.85f), 2);
         static immutable Marker selected = Marker(SDL_FColor(1, 0.85f, 0.3f, 0.18f), SDL_FColor(1, 0.8f, 0.2f, 1), 3);
-        if (state.hoverCol != state.selCol || state.hoverRow != state.selRow)
+        static immutable Marker canBuild = Marker(SDL_FColor(0.3f, 1, 0.4f, 0.25f), SDL_FColor(0.4f, 1, 0.5f, 1), 3);
+        static immutable Marker cannotBuild = Marker(SDL_FColor(1, 0.25f, 0.2f, 0.25f),
+                SDL_FColor(1, 0.3f, 0.25f, 1), 3);
+        if (state.buildKind >= 0 && game.active)
+            mark(state.hoverCol, state.hoverRow, game.canPlace(cast(TowerKind)state.buildKind,
+                    state.hoverCol, state.hoverRow) == CommandError.none ? canBuild : cannotBuild);
+        else if (state.hoverCol != state.selCol || state.hoverRow != state.selRow)
             mark(state.hoverCol, state.hoverRow, hover);
         mark(state.selCol, state.selRow, selected);
     }
@@ -110,6 +132,7 @@ private struct Viewer {
             return;
         }
         state.selCol = state.selRow = state.hoverCol = state.hoverRow = -1;
+        startGame();
         const st = r.value;
         printf("seed %u: %d x %d, %zu grids solved, %zu failed, %zu mountains, %.1f ms\n", state.params.seed,
                 session.tiles.rect.cols, session.tiles.rect.rows, st.gridsSolved, st.gridsFailed,
@@ -126,6 +149,82 @@ private struct Viewer {
         fitView();
     }
 
+    /// New game on the current map (none without roads).
+    void startGame() @nogc nothrow @trusted {
+        simAcc = 0;
+        if (state.params.routes.enabled && session.network.allocated) {
+            game.start(*session, state.params.seed);
+            bot.setup(game);
+        } else
+            game.stop();
+    }
+
+    /// Reacts to what the last tick or command did: rebuilds the cells whose tower changed.
+    void onSimEvents() @nogc nothrow @trusted {
+        foreach (ref e; game.events) {
+            if (e.kind != EventKind.built && e.kind != EventKind.upgraded && e.kind != EventKind.sold)
+                continue;
+            immutable row = e.y / rowUnits;
+            mesh.invalidateCell((e.x / halfHex - (row & 1)) / 2, row);
+        }
+    }
+
+    /// Applies queued commands from the keyboard, mouse and panel.
+    void applyCommands() @nogc nothrow @trusted {
+        if (!game.active)
+            return;
+        game.clearEvents();
+        GameCommand c;
+        while (gameQueue.pop(c)) {
+            immutable err = game.apply(c);
+            if (err != CommandError.none) {
+                state.lastError = err;
+                state.errorTimer = 2.5f;
+            }
+        }
+        onSimEvents();
+    }
+
+    /// One simulation tick, the bot's turn, and the View's reaction.
+    void stepOnce() @nogc nothrow @trusted {
+        game.advance();
+        if (state.bot)
+            bot.act(game);
+        onSimEvents();
+    }
+
+    /// Runs the ticks `dt` seconds of play call for at the current speed (at most a few per frame,
+    /// so a slow frame does not snowball).
+    void stepGame(double dt) @nogc nothrow @trusted {
+        if (!game.active || state.speed == 0)
+            return;
+        enum double tickLen = 1.0 / ticksPerSecond;
+        simAcc += dt * state.speed;
+        int steps = 0;
+        while (simAcc >= tickLen) {
+            if (steps++ == 12) {
+                simAcc = 0;
+                break;
+            }
+            stepOnce();
+            simAcc -= tickLen;
+        }
+    }
+
+    bool gameRunning() const @nogc nothrow @safe {
+        return game.active && state.speed > 0 && (game.status == GameStatus.waiting || game.status == GameStatus.wave);
+    }
+
+    void upgradeSelected(int branch) @nogc nothrow @trusted {
+        const t = game.towerAt(state.selCol, state.selRow);
+        if (t is null)
+            return;
+        // U only goes to Lv2; Q / E pick the specialization from there.
+        if ((branch < 0) != (t.stage == Stage.lv1))
+            return;
+        gameQueue.push(GameCommand(CommandType.upgrade, t.kind, cast(ubyte)(branch < 0 ? 0 : branch), t.col, t.row));
+    }
+
     bool haveModel() const @nogc nothrow @safe {
         return glb.loaded && texture.handle !is null;
     }
@@ -133,6 +232,7 @@ private struct Viewer {
     void rebuildMesh(SDL_Renderer* sdl) @nogc nothrow @trusted {
         if (!mesh.setup(*session, state.mesh, haveModel ? &glb : null, texture.variants))
             fprintf(stderr, "out of memory preparing the map mesh\n");
+        mesh.setGame(&game);
         if (!overview.build(sdl, *session))
             fprintf(stderr, "could not build the overview image\n");
     }
@@ -214,8 +314,10 @@ private struct Viewer {
             moved = false;
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            // A press that never travelled is a click, not a pan.
-            clickPending = dragging && !moved && e.button.button == 1;
+            // A press that never travelled is a click, not a pan; a right click cancels building.
+            clickPending = dragging && !moved && e.button.button == SDL_BUTTON_LEFT;
+            if (dragging && !moved && e.button.button == SDL_BUTTON_RIGHT)
+                state.buildKind = -1;
             dragging = false;
             break;
         case SDL_EVENT_MOUSE_MOTION:
@@ -244,7 +346,51 @@ private struct Viewer {
             enum float step = 60;
             switch (e.key.key) {
             case SDLK_ESCAPE:
-                queue.push(CommandKind.quit);
+                // Back out one step at a time: building, then the selection, then the viewer.
+                if (state.buildKind >= 0)
+                    state.buildKind = -1;
+                else if (state.selCol >= 0)
+                    state.selCol = state.selRow = -1;
+                else
+                    queue.push(CommandKind.quit);
+                break;
+            case SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6:
+                immutable k = cast(int)(e.key.key - SDLK_1);
+                state.buildKind = state.buildKind == k ? -1 : k;
+                break;
+            case SDLK_U:
+                upgradeSelected(-1);
+                break;
+            case SDLK_Q:
+                upgradeSelected(0);
+                break;
+            case SDLK_E:
+                upgradeSelected(1);
+                break;
+            case SDLK_DELETE, SDLK_BACKSPACE:
+                if (game.towerAt(state.selCol,
+                        state.selRow) !is null)
+                    gameQueue.push(GameCommand(CommandType.sell, TowerKind.arrow, 0, state.selCol, state.selRow));
+                break;
+            case SDLK_T:
+                if (const t = game.towerAt(state.selCol, state.selRow))
+                    gameQueue.push(GameCommand(CommandType.setTargeting, t.kind,
+                            cast(ubyte)((t.targeting + 1) % 3), t.col, t.row));
+                break;
+            case SDLK_SPACE:
+                gameQueue.push(GameCommand(CommandType.startWave));
+                break;
+            case SDLK_P:
+                state.speed = state.speed == 0 ? 1 : 0;
+                break;
+            case SDLK_COMMA:
+                state.speed = state.speed > 1 ? state.speed - 1 : 1;
+                break;
+            case SDLK_PERIOD:
+                state.speed = state.speed < 3 ? state.speed + 1 : 3;
+                break;
+            case SDLK_B:
+                state.bot = !state.bot;
                 break;
             case SDLK_R:
                 state.params.seed = (state.params.seed * 1664525u + 1013904223u) & int.max;
@@ -439,6 +585,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     v.session = created.value;
     v.state.params = cfg.params;
     v.state.showPanel = !cfg.hasScreenshot;
+    v.state.bot = cfg.bot;
 
     float viewW = 0, viewH = 0;
     void updateViewport() {
@@ -453,6 +600,8 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     v.regenerate(ren.handle);
     if (v.session.tiles.rect.cols == 0)
         return 1; // the initial parameters were rejected
+    foreach (t; 0 .. cfg.ticks)
+        v.stepOnce();
     if (cfg.bench > 0) {
         if (cfg.zoom > 0) {
             v.camera.zoom = cfg.zoom;
@@ -482,11 +631,14 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     ulong last = SDL_GetPerformanceCounter();
     bool firstFrame = true;
     bool animating;
+    ulong simLast = SDL_GetPerformanceCounter();
     while (v.running) {
         SDL_Event e;
         immutable capturing = ui.capturing();
         // Idle frames cost nothing: sleep until an event arrives (a screenshot run never waits).
-        bool got = cfg.hasScreenshot ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e, animating ? 120 : 500);
+        // While the game runs, frames come as fast as vsync allows.
+        bool got = cfg.hasScreenshot || v.gameRunning ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e,
+                animating ? 120 : 500);
         immutable woke = got || firstFrame || animating;
         firstFrame = false;
         if (!woke)
@@ -498,7 +650,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         }
         immutable wasPanel = v.state.showPanel;
         v.updatePicking(capturing);
-        drawPanel(ui, v.state, v.queue, *v.session, v.mesh, v.haveModel, viewH);
+        drawPanel(ui, v.state, v.queue, v.gameQueue, v.game, *v.session, v.mesh, v.haveModel, viewH);
 
         bool screenshot = cfg.hasScreenshot;
         CommandKind cmd;
@@ -524,6 +676,15 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         updateViewport();
         if (wasPanel != v.state.showPanel)
             v.fitView();
+        {
+            immutable now = SDL_GetPerformanceCounter();
+            double sdt = (now - simLast) / freq;
+            simLast = now;
+            sdt = sdt > 0.25 ? 0.25 : sdt;
+            v.applyCommands();
+            v.stepGame(cfg.hasScreenshot ? 0 : sdt);
+            v.state.errorTimer -= cast(float)sdt;
+        }
 
         SDL_SetRenderDrawColor(ren.handle, 128, 134, 153, 255);
         SDL_RenderClear(ren.handle);
@@ -533,6 +694,16 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
         immutable drawMs = cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
         v.drawMarkers(ren.handle);
+        {
+            OverlayInput inp;
+            inp.selCol = v.state.selCol;
+            inp.selRow = v.state.selRow;
+            inp.buildKind = v.state.buildKind;
+            inp.hoverCol = v.state.hoverCol;
+            inp.hoverRow = v.state.hoverRow;
+            inp.time = cast(float)(drawStart / freq);
+            v.overlay.draw(ren.handle, v.game, v.camera, v.mesh, cast(float)(v.simAcc * ticksPerSecond), inp);
+        }
         v.state.drawnVerts = v.renderer.drawnVerts;
         // Full-screen blending is the one cost that scales with pixels, so it goes first when the
         // frame budget is tight.
@@ -540,7 +711,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             drawVignette(ren.handle, v.camera);
         if (v.state.grain && v.mesh.quality > 0.5f && v.grain.handle !is null)
             drawGrain(ren.handle, v.grain.handle, v.camera, drawStart);
-        animating = v.state.animateWater && v.renderer.sparkleVisible;
+        animating = (v.state.animateWater && v.renderer.sparkleVisible) || v.gameRunning;
         ui.render();
         if (screenshot) {
             char[1100] path = void;

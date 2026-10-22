@@ -221,6 +221,12 @@ struct Game {
         scratch = hitList = null;
     }
 
+    /// Ends the game (no game is active until the next `start`).
+    void stop() @nogc nothrow @trusted {
+        freePools();
+        numEvents_ = numTowers_ = 0;
+    }
+
     /// New game on a generated map.
     void start(ref const MapSession s, uint seed) @nogc nothrow @trusted {
         board_.load(s, seed);

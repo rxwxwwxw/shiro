@@ -74,7 +74,24 @@ enum ubyte SDL_BUTTON_RIGHT = 3;
 enum SDL_Keymod SDL_KMOD_SHIFT = 0x0003;
 
 enum : SDL_Keycode {
+    SDLK_BACKSPACE = 0x08,
     SDLK_TAB = 0x09,
+    SDLK_SPACE = 0x20,
+    SDLK_COMMA = 0x2c,
+    SDLK_PERIOD = 0x2e,
+    SDLK_1 = 0x31,
+    SDLK_2 = 0x32,
+    SDLK_3 = 0x33,
+    SDLK_4 = 0x34,
+    SDLK_5 = 0x35,
+    SDLK_6 = 0x36,
+    SDLK_B = 0x62,
+    SDLK_E = 0x65,
+    SDLK_P = 0x70,
+    SDLK_Q = 0x71,
+    SDLK_T = 0x74,
+    SDLK_U = 0x75,
+    SDLK_DELETE = 0x7f,
     SDLK_ESCAPE = 0x1b,
     SDLK_MINUS = 0x2d,
     SDLK_EQUALS = 0x3d,
@@ -187,6 +204,7 @@ bool SDL_RenderClear(SDL_Renderer* renderer);
 bool SDL_RenderPresent(SDL_Renderer* renderer);
 bool SDL_RenderGeometry(SDL_Renderer* renderer, void* texture, const(SDL_Vertex)* vertices,
         int numVertices, const(int)* indices, int numIndices);
+bool SDL_RenderDebugText(SDL_Renderer* renderer, float x, float y, const(char)* str);
 bool SDL_RenderLines(SDL_Renderer* renderer, const(SDL_FPoint)* points, int count);
 SDL_Surface* SDL_RenderReadPixels(SDL_Renderer* renderer, const(void)* rect);
 
@@ -222,5 +240,5 @@ ulong SDL_GetPerformanceCounter();
 ulong SDL_GetPerformanceFrequency();
 bool SDL_GetCurrentRenderOutputSize(SDL_Renderer* renderer, int* w, int* h);
 
-enum uint SDL_BLENDMODE_NONE = 0x0, SDL_BLENDMODE_BLEND = 0x1;
+enum uint SDL_BLENDMODE_NONE = 0x0, SDL_BLENDMODE_BLEND = 0x1, SDL_BLENDMODE_ADD = 0x2;
 bool SDL_SetRenderDrawBlendMode(SDL_Renderer* renderer, uint blendMode);
