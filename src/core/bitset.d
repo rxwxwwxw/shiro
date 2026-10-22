@@ -105,7 +105,7 @@ struct BitSet(size_t N) {
         return size_t.max;
     }
 
-    bool opEquals(const ref BitSet rhs) const @nogc nothrow pure @safe {
+    bool opEquals(const BitSet rhs) const @nogc nothrow pure @safe {
         return words == rhs.words;
     }
 

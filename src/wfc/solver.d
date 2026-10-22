@@ -451,18 +451,7 @@ struct Solver {
                 if (n < 0 || st.cells[n].collapsed)
                     continue;
                 immutable dir = cast(HexDir)d;
-                immutable ret = opposite(dir);
-
-                StateSet allowed;
-                uint seen = 0;
-                foreach (s; poss.bits) {
-                    immutable ei = rules.stateEdges[s][d];
-                    immutable bit = 1u << (ei.type * levelsCount + ei.level);
-                    if (seen & bit)
-                        continue;
-                    seen |= bit;
-                    allowed.unite(rules.byEdge[ei.type][ret][ei.level]);
-                }
+                immutable allowed = rules.allowedAcross(*poss, dir);
 
                 StateSet gone = st.cells[n].possibilities;
                 gone.subtract(allowed);

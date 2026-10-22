@@ -284,11 +284,21 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 
 
 ### Phase 9: Microbenchmarks & Performance Optimization
-* [ ] Create `benchmarks/bench_wfc_solve.d`:
+* [x] Create `benchmarks/bench_wfc_solve.d`:
   - Benchmark single-grid solve latency (microseconds per grid) and 19-grid full island generation time.
   - Validate performance on low-spec hardware target budget.
-* [ ] Create `benchmarks/bench_propagation.d`:
+* [x] Create `benchmarks/bench_propagation.d`:
   - Microbenchmark measuring raw BitSet intersection throughput in hot loop.
+
+**Phase 9 notes (implemented):** run with `benchmarks/run_benchmarks.sh`. `bench_wfc_solve` fails (exit 1) over budget: single-grid p95 15 ms, island 400 ms. The first profile showed propagation dominated by iterating every remaining state; `allowedAcross` now walks the 25 (edgeType, level) classes with one bitset AND-test each instead (the per-state version stays as `allowedAcrossReference`, the test oracle). Results are bit-identical and ~4x faster:
+
+| Measure (Apple silicon, `-O3`) | Before | After |
+| :--- | :--- | :--- |
+| `allowedAcross` (full cell) | 1,094 ns | 57 ns |
+| Single grid, 217 cells | 7.9 ms | 1.9 ms (p95 2.2 ms) |
+| 19-grid island, 4,123 cells | 192 ms | 49 ms |
+| 2,000,084-cell 16:9 map | 103 s | 29 s (7.4 MB peak RSS) |
+
 
 ### Phase 10: Verification, Formatting, and Sanitizers
 * [ ] Verify zero Phobos imports (`grep -rn "import std\." src/`).

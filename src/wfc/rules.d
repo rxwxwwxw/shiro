@@ -83,7 +83,21 @@ struct AdjacencyRules {
     }
 
     /// Union of neighbor states allowed across `dir` given a set of remaining states in a cell.
+    /// Walks the (edgeType, level) classes instead of the individual states: a class contributes
+    /// its partner set exactly when some remaining state has that edge, which is one 128-byte
+    /// AND-test against byEdge.
     StateSet allowedAcross(const ref StateSet possibilities, HexDir dir) const @nogc nothrow pure @safe {
+        StateSet result;
+        immutable ret = opposite(dir);
+        foreach (t; 0 .. numEdgeTypes)
+            foreach (l; 0 .. levelsCount)
+                if (possibilities.intersects(byEdge[t][dir][l]))
+                    result.unite(byEdge[t][ret][l]);
+        return result;
+    }
+
+    /// Per-state formulation of allowedAcross (slower); kept as the test oracle.
+    StateSet allowedAcrossReference(const ref StateSet possibilities, HexDir dir) const @nogc nothrow pure @safe {
         StateSet result;
         immutable ret = opposite(dir);
         foreach (s; possibilities.bits) {
@@ -201,4 +215,27 @@ unittest {
         assert(r.stateEdges[b][HexDir.SW].level == 2);
     foreach (b; r.allowedAcross(sl, HexDir.SW).bits)
         assert(r.stateEdges[b][HexDir.NE].level == 1);
+}
+
+unittest {
+    // The class-based allowedAcross equals the per-state reference for random possibility sets.
+    import core.random : Random;
+
+    auto r = makeRules();
+    auto rng = Random(99);
+    foreach (trial; 0 .. 400) {
+        StateSet p;
+        immutable density = 1 + rng.below(40);
+        foreach (s; 0 .. numStates)
+            if (rng.below(100) < density)
+                p.set(s);
+        foreach (d; 0 .. 6)
+            assert(r.allowedAcross(p, cast(HexDir)d) == r.allowedAcrossReference(p, cast(HexDir)d));
+    }
+    StateSet empty, full;
+    full.setFirst(numStates);
+    foreach (d; 0 .. 6) {
+        assert(!r.allowedAcross(empty, cast(HexDir)d).any);
+        assert(r.allowedAcross(full, cast(HexDir)d) == r.allowedAcrossReference(full, cast(HexDir)d));
+    }
 }
