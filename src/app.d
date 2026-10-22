@@ -15,6 +15,7 @@ import gfx.highlight;
 import gfx.iso : cellCenter, levelStep, squash;
 import gfx.pick;
 import gfx.overview;
+import gfx.particles;
 import gfx.renderer;
 import gfx.sdl_handles;
 import gfx.td_overlay;
@@ -51,6 +52,7 @@ private struct Viewer {
     Bot bot;
     GameQueue gameQueue;
     TdOverlay overlay;
+    Particles fx;
     /// Real time not yet simulated, in seconds; the overlay interpolates by the leftover.
     double simAcc = 0;
     bool running = true;
@@ -157,10 +159,12 @@ private struct Viewer {
             bot.setup(game);
         } else
             game.stop();
+        fx.reset(game);
     }
 
     /// Reacts to what the last tick or command did: rebuilds the cells whose tower changed.
     void onSimEvents() @nogc nothrow @trusted {
+        fx.onEvents(game.events);
         foreach (ref e; game.events) {
             if (e.kind != EventKind.built && e.kind != EventKind.upgraded && e.kind != EventKind.sold)
                 continue;
@@ -600,8 +604,15 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     v.regenerate(ren.handle);
     if (v.session.tiles.rect.cols == 0)
         return 1; // the initial parameters were rejected
-    foreach (t; 0 .. cfg.ticks)
+    if (!v.fx.open(ren.handle))
+        fprintf(stderr, "particle effects unavailable\n");
+    v.fx.reset(v.game);
+    foreach (t; 0 .. cfg.ticks) {
         v.stepOnce();
+        // Keep effects in step so a --screenshot after --ticks shows them mid-flight.
+        v.fx.ambient(v.game, 1.0f / ticksPerSecond, 0);
+        v.fx.update(1.0f / ticksPerSecond);
+    }
     if (cfg.bench > 0) {
         if (cfg.zoom > 0) {
             v.camera.zoom = cfg.zoom;
@@ -684,6 +695,11 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             v.applyCommands();
             v.stepGame(cfg.hasScreenshot ? 0 : sdt);
             v.state.errorTimer -= cast(float)sdt;
+            v.fx.density = v.mesh.quality;
+            if (v.state.speed > 0) {
+                v.fx.ambient(v.game, cast(float)sdt, 0);
+                v.fx.update(cast(float)sdt);
+            }
         }
 
         SDL_SetRenderDrawColor(ren.handle, 128, 134, 153, 255);
@@ -703,6 +719,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             inp.hoverRow = v.state.hoverRow;
             inp.time = cast(float)(drawStart / freq);
             v.overlay.draw(ren.handle, v.game, v.camera, v.mesh, cast(float)(v.simAcc * ticksPerSecond), inp);
+            v.fx.draw(ren.handle, v.camera, v.mesh);
         }
         v.state.drawnVerts = v.renderer.drawnVerts;
         // Full-screen blending is the one cost that scales with pixels, so it goes first when the
@@ -711,7 +728,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             drawVignette(ren.handle, v.camera);
         if (v.state.grain && v.mesh.quality > 0.5f && v.grain.handle !is null)
             drawGrain(ren.handle, v.grain.handle, v.camera, drawStart);
-        animating = (v.state.animateWater && v.renderer.sparkleVisible) || v.gameRunning;
+        animating = (v.state.animateWater && v.renderer.sparkleVisible) || v.gameRunning || v.fx.busy;
         ui.render();
         if (screenshot) {
             char[1100] path = void;
