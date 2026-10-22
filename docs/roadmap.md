@@ -205,16 +205,16 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 * [x] Colocated unit tests verifying coordinate round-tripping and metric invariants.
 
 ### Phase 3: Tile Catalog & Adjacency Precomputation
-* [ ] Create `src/wfc/tile_data.d`:
+* [x] Create `src/wfc/tile_data.d`:
   - Enums `EdgeType` (`grass`, `water`, `road`, `river`, `coast`) and `HexDir`.
   - Static definition of all 34 tiles from `HexTileData.js`.
   - Slopes, high edges, `levelIncrement` (1 or 2), and `preventChaining` flags.
   - Edge rotation functions (`rotateHexEdges`).
-* [ ] Create `src/wfc/rules.d`:
+* [x] Create `src/wfc/rules.d`:
   - State enumeration generating all 924 valid `(tileType, rotation, level)` states.
   - Calculation of edge levels: slopes have elevated levels on high edges.
   - `HexWFCAdjacencyRules` table: precomputes `byEdge[edgeType][dir][level]` bitsets.
-* [ ] Colocated unit tests verifying table symmetry and rule generation.
+* [x] Colocated unit tests verifying table symmetry and rule generation.
 
 ### Phase 4: Headless WFC Solver with Backtracking
 * [ ] Create `src/wfc/cell.d`:
