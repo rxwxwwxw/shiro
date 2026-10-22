@@ -190,19 +190,19 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 ## 5. Detailed Step-by-Step Implementation Phases
 
 ### Phase 1: Core Druntime Primitives & Attribution Framework
-* [ ] Create `src/core/result.d`: Zero-allocation tagged union `Result!(T, E)`.
-* [ ] Create `src/core/random.d`: Deterministic Mulberry32 32-bit PRNG with `setSeed`, `random`, `uniform01`, `shuffle`.
-* [ ] Create `src/core/bitset.d`: `BitSet!N` with bitwise ops, `popcnt`, `bsf`, and iteration.
-* [ ] Create `src/core/noise.d`: 2D Simplex noise generator (`@nogc nothrow`).
-* [ ] Add unit tests for all core primitives.
+* [x] Create `src/core/result.d`: Zero-allocation tagged union `Result!(T, E)`.
+* [x] Create `src/core/random.d`: Deterministic Mulberry32 32-bit PRNG with `setSeed`, `random`, `uniform01`, `shuffle`.
+* [x] Create `src/core/bitset.d`: `BitSet!N` with bitwise ops, `popcnt`, `bsf`, and iteration.
+* [x] Create `src/core/noise.d`: 2D Simplex noise generator (`@nogc nothrow`).
+* [x] Add unit tests for all core primitives.
 
 ### Phase 2: Hex Coordinate Geometry & Math
-* [ ] Create `src/wfc/hex.d`:
+* [x] Create `src/wfc/hex.d`:
   - `CubeCoord(int q, int r, int s)` with invariant $q + r + s = 0$.
   - Conversion between odd-r offset `(col, row)` and cube coordinates.
   - Neighbor lookups for all 6 pointy-top directions `[NE, E, SE, SW, W, NW]`.
   - Hex distance, range queries (`cubeCoordsInRadius`), and return directions.
-* [ ] Colocated unit tests verifying coordinate round-tripping and metric invariants.
+* [x] Colocated unit tests verifying coordinate round-tripping and metric invariants.
 
 ### Phase 3: Tile Catalog & Adjacency Precomputation
 * [ ] Create `src/wfc/tile_data.d`:
