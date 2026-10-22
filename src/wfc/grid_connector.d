@@ -132,6 +132,17 @@ struct MapRect {
         return o.col >= 0 && o.col < cols && o.row >= 0 && o.row < rows;
     }
 
+    /// Flat row-major index of a contained cell.
+    size_t index(const CubeCoord c) const @nogc nothrow pure @safe {
+        immutable o = cubeToOffset(c);
+        return cast(size_t)o.row * cols + o.col;
+    }
+
+    /// Inverse of `index`.
+    CubeCoord cellAt(size_t i) const @nogc nothrow pure @safe {
+        return offsetToCube(cast(int)(i % cols), cast(int)(i / cols));
+    }
+
     /// Pointy-top world aspect ratio (width / height) with unit hex size: cols*sqrt(3) / (1.5*rows).
     double aspect() const @nogc nothrow pure @safe {
         return cols * 1.7320508075688772 / (1.5 * rows);

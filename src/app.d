@@ -7,8 +7,11 @@ module app;
 import bindings.sdl3.sdl;
 import core.result : EngineError;
 import core.stdc.stdio : fprintf, printf, snprintf, stderr;
+import core.stdc.string : strlen;
 import gfx.camera;
+import gfx.glb;
 import gfx.hex_mesh;
+import gfx.overview;
 import gfx.renderer;
 import gfx.sdl_handles;
 import gui.nuklear_ui;
@@ -16,9 +19,20 @@ import viewer.cli;
 import viewer.commands;
 import wfc.map_session;
 
+/// Elevation-blended copies of the texture atlas (one per level) and their edge length in pixels.
+private enum int blendVariants = 5, blendSize = 512;
+/// Palette grading calibrated against pixels of the reference's own screenshot.
+private enum float paletteSaturation = 1.0f, paletteExposure = 0.9f;
+private enum string defaultAssets = "third-party/Hex-Map-WFC/public/assets";
+
 private struct Viewer {
     MapSession* session;
+    GlbModel glb;
+    Texture texture;
+    Texture caustic;
+    Texture grain;
     MapMesh mesh;
+    Overview overview;
     MapRenderer renderer;
     Camera camera;
     ViewerState state;
@@ -34,23 +48,41 @@ private struct Viewer {
     }
 
     /// Regenerates the map from state.params; on bad params the old map stays.
-    void regenerate() @nogc nothrow @trusted {
+    void regenerate(SDL_Renderer* sdl) @nogc nothrow @trusted {
         immutable r = session.regenerate(state.params);
         if (r.isErr) {
-            fprintf(stderr, "regenerate rejected (error %d): check sizes / radius / rings\n", r.error);
+            if (r.error == EngineError.PlacementFailed || r.error == EngineError.RoutingFailed)
+                fprintf(stderr, "regenerate failed: no room for %d sources / %d sinks with their roads\n",
+                        state.params.routes.place.sources, state.params.routes.place.sinks);
+            else
+                fprintf(stderr, "regenerate rejected (error %d): check sizes / radius / rings\n", r.error);
             return;
         }
         const st = r.value;
         printf("seed %u: %d x %d, %zu grids solved, %zu failed, %zu mountains, %.1f ms\n", state.params.seed,
                 session.tiles.rect.cols, session.tiles.rect.rows, st.gridsSolved, st.gridsFailed,
                 session.tiles.countMountains, session.genMillis);
-        rebuildMesh();
+        if (state.params.routes.enabled)
+            printf(
+                    "  %d routes (%d loops), %d/%d sources connected, %d/%d sinks reached, %zu leaks, %s, %d attempt(s)\n",
+                    session.network.numRoutes, session.network.numLoops,
+                    session.routeReport.sourcesConnected, session.routeReport.sources,
+                    session.routeReport.sinksReached,
+                    session.routeReport.sinks, session.routeReport.leakCells,
+                    session.routeReport.ok ? "valid".ptr : "INVALID".ptr, session.routeAttempts);
+        rebuildMesh(sdl);
         fitView();
     }
 
-    void rebuildMesh() @nogc nothrow @trusted {
-        if (!mesh.build(*session, state.mesh) || !renderer.prepare(mesh))
-            fprintf(stderr, "out of memory building the map mesh\n");
+    bool haveModel() const @nogc nothrow @safe {
+        return glb.loaded && texture.handle !is null;
+    }
+
+    void rebuildMesh(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        if (!mesh.setup(*session, state.mesh, haveModel ? &glb : null, texture.variants))
+            fprintf(stderr, "out of memory preparing the map mesh\n");
+        if (!overview.build(sdl, *session))
+            fprintf(stderr, "could not build the overview image\n");
     }
 
     void fitView() @nogc nothrow @safe {
@@ -60,6 +92,60 @@ private struct Viewer {
     void setViewport(float w, float h) @nogc nothrow @safe {
         immutable x0 = state.showPanel ? panelWidth : 0;
         camera.setViewport(x0, w - x0, h);
+    }
+
+    /// Loads hex-terrain.glb and its texture from the assets directory (the --assets flag, else
+    /// the repository copy relative to the working directory or the executable). Without them the
+    /// viewer still runs, with flat shapes.
+    void loadModel(ref Renderer ren, ref const ViewerConfig cfg) @nogc nothrow @trusted {
+        char[2048] path = void;
+        const(char)* base = SDL_GetBasePath();
+        size_t dirLen;
+        foreach (attempt; 0 .. 3) {
+            if (attempt == 0 && cfg.hasAssets)
+                snprintf(path.ptr, path.length, "%s/models/hex-terrain.glb", cfg.assets.ptr);
+            else if (attempt == 1 && !cfg.hasAssets)
+                snprintf(path.ptr, path.length, "%.*s/models/hex-terrain.glb",
+                        cast(int)defaultAssets.length, defaultAssets.ptr);
+            else if (attempt == 2 && !cfg.hasAssets && base !is null)
+                snprintf(path.ptr, path.length, "%s../%.*s/models/hex-terrain.glb", base,
+                        cast(int)defaultAssets.length, defaultAssets.ptr);
+            else
+                continue;
+            if (glb.load(path.ptr) == EngineError.None) {
+                dirLen = strlen(path.ptr) - "/models/hex-terrain.glb".length;
+                break;
+            }
+        }
+        if (!glb.loaded) {
+            fprintf(stderr, "hex-terrain.glb not found (try --assets DIR); using flat shapes\n");
+            return;
+        }
+        char[2048] lo = void, hi = void;
+        if (grain.openGrain(ren, 128, 22) != EngineError.None)
+            fprintf(stderr, "no film grain texture\n");
+        // SDL's own loader reads PNG but not JPEG, so the reference's caustic.jpg ships as a PNG copy
+        // in the repository's assets/ directory.
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(lo.ptr, lo.length, "assets/caustic.png");
+            else if (base !is null)
+                snprintf(lo.ptr, lo.length, "%s../assets/caustic.png", base);
+            else
+                break;
+            if (caustic.openCaustic(ren, lo.ptr, 0.29f, 17.5f, 0.40f) == EngineError.None)
+                break;
+        }
+        // The reference blends its moody atlas into the winter one by elevation.
+        snprintf(lo.ptr, lo.length, "%.*s/textures/moody.png", cast(int)dirLen, path.ptr);
+        snprintf(hi.ptr, hi.length, "%.*s/textures/winter.png", cast(int)dirLen, path.ptr);
+        if (texture.openBlend(ren, lo.ptr, hi.ptr, blendVariants, blendSize, paletteSaturation,
+                paletteExposure) == EngineError.None)
+            printf("loaded %zu meshes and the blended texture atlas\n", glb.meshCount);
+        else if (texture.openPng(ren, glb.image) != EngineError.None)
+            fprintf(stderr, "could not decode the model texture; using flat shapes\n");
+        else
+            printf("loaded %zu meshes from hex-terrain.glb (single texture)\n", glb.meshCount);
     }
 
     /// Camera and hotkeys; `uiCapturing` means the panel owns the mouse / keyboard this frame.
@@ -150,6 +236,109 @@ int main(string[] args) {
     return run(cfg);
 }
 
+/// The reference's water drift, in texture units per second (speed 0.3 * 0.015).
+private enum double sparkleDrift = 0.0045;
+
+/// Film grain over the map area: the grain tile wrapped across the viewport at an offset that
+/// changes every frame, so it shimmers whenever the view redraws.
+private void drawGrain(SDL_Renderer* r, SDL_Texture* tex, ref const Camera cam, ulong seed) @nogc nothrow @trusted {
+    enum float tile = 128;
+    immutable h = cast(uint)(seed * 2654435761UL >> 7);
+    immutable ou = (h & 0xFF) / 255.0f, ov = (h >> 8 & 0xFF) / 255.0f;
+    immutable x0 = cam.x0, y0 = 0.0f, x1 = cam.x0 + cam.width, y1 = cam.height;
+    immutable us = cam.width / tile, vs = cam.height / tile;
+    SDL_Vertex[4] v;
+    immutable float[2][4] p = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    immutable float[2][4] uv = [[ou, ov], [ou + us, ov], [ou + us, ov + vs], [ou, ov + vs]];
+    foreach (i; 0 .. 4) {
+        v[i].position = SDL_FPoint(p[i][0], p[i][1]);
+        v[i].color = SDL_FColor(1, 1, 1, 1);
+        v[i].tex_coord = SDL_FPoint(uv[i][0], uv[i][1]);
+    }
+    static immutable int[6] idx = [0, 1, 2, 0, 2, 3];
+    SDL_SetRenderTextureAddressMode(r, SDL_TEXTURE_ADDRESS_WRAP, SDL_TEXTURE_ADDRESS_WRAP);
+    SDL_RenderGeometry(r, tex, v.ptr, 4, idx.ptr, 6);
+    SDL_SetRenderTextureAddressMode(r, SDL_TEXTURE_ADDRESS_AUTO, SDL_TEXTURE_ADDRESS_AUTO);
+}
+
+/// Darkens the corners of the map area: a fan of black triangles whose alpha rises from nothing at
+/// the center to the edges, like the reference's vignette pass. No texture, eight triangles.
+private void drawVignette(SDL_Renderer* r, ref const Camera cam) @nogc nothrow @trusted {
+    immutable x0 = cam.x0, y0 = 0.0f, x1 = cam.x0 + cam.width, y1 = cam.height;
+    immutable xm = (x0 + x1) * 0.5f, ym = (y0 + y1) * 0.5f;
+    // Center, then the ring clockwise from the top-left corner: corners darkest, edge midpoints lighter.
+    static immutable float[9] alpha = [0, 0.42f, 0.10f, 0.42f, 0.10f, 0.42f, 0.10f, 0.42f, 0.10f];
+    immutable float[2][9] pos = [
+        [xm, ym], [x0, y0], [xm, y0], [x1, y0], [x1, ym], [x1, y1], [xm, y1], [x0, y1], [x0, ym]
+    ];
+    SDL_Vertex[9] v;
+    foreach (i; 0 .. 9) {
+        v[i].position = SDL_FPoint(pos[i][0], pos[i][1]);
+        v[i].color = SDL_FColor(0.04f, 0.05f, 0.09f, alpha[i]);
+        v[i].tex_coord = SDL_FPoint(0, 0);
+    }
+    static immutable int[24] idx = [
+        0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 6, 0, 6, 7, 0, 7, 8, 0, 8, 1
+    ];
+    SDL_RenderGeometry(r, null, v.ptr, 9, idx.ptr, 24);
+}
+
+/// Frame-time benchmark (--bench N): N frames standing still, then N frames panning so new chunks
+/// are built each frame. Vsync is off and each frame ends with a pixel readback so the GPU's
+/// work is included. Prints the average, median, 95th percentile and worst frame in ms.
+private int bench(ref Renderer ren, ref Viewer v, int frames, float slow) @nogc nothrow @trusted {
+    SDL_SetRenderVSync(ren.handle, 0);
+    enum int cap = 2000;
+    immutable n = frames < cap ? frames : cap;
+    static float[cap] ms, cpu;
+    immutable freq = cast(double)SDL_GetPerformanceFrequency();
+    foreach (phase; 0 .. 2) {
+        foreach (i; 0 .. n) {
+            if (phase == 1)
+                v.camera.pan(-9, -3);
+            immutable t0 = SDL_GetPerformanceCounter();
+            SDL_SetRenderDrawColor(ren.handle, 128, 134, 153, 255);
+            SDL_RenderClear(ren.handle);
+            v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera);
+            cpu[i] = cast(float)((SDL_GetPerformanceCounter() - t0) / freq * 1000.0);
+            SDL_RenderPresent(ren.handle);
+            int[4] px = [0, 0, 1, 1];
+            auto surf = SDL_RenderReadPixels(ren.handle, px.ptr);
+            if (surf !is null)
+                SDL_DestroySurface(surf);
+            ms[i] = cast(float)((SDL_GetPerformanceCounter() - t0) / freq * 1000.0);
+            v.mesh.adapt(cpu[i] * slow, ms[i] * slow);
+        }
+        float sum = 0, csum = 0;
+        foreach (i; 0 .. n)
+            csum += cpu[i];
+        foreach (i; 0 .. n) {
+            sum += ms[i];
+            // Insertion sort in place: n is small.
+            immutable x = ms[i];
+            size_t j = i;
+            for (; j > 0 && ms[j - 1] > x; j--)
+                ms[j] = ms[j - 1];
+            ms[j] = x;
+        }
+        // Sorting ms above scrambled the pairing with cpu, so cpu gets its own sort.
+        foreach (i; 1 .. n) {
+            immutable x = cpu[i];
+            size_t j = i;
+            for (; j > 0 && cpu[j - 1] > x; j--)
+                cpu[j] = cpu[j - 1];
+            cpu[j] = x;
+        }
+        printf("%s: CPU draw avg %.2f ms, p95 %.2f, worst %.2f\n", phase == 0 ? "still  ".ptr
+                : "panning".ptr, csum / n, cpu[cast(size_t)(n * 0.95f)], cpu[n - 1]);
+        printf("%s: %d frames, avg %.2f ms, median %.2f, p95 %.2f, worst %.2f | detail %d (quality %.0f%%), %zu verts drawn, cache %.1f MB\n",
+                phase == 0 ? "still  ".ptr : "panning".ptr, n, sum / n, ms[n / 2],
+                ms[cast(size_t)(n * 0.95f)], ms[n - 1], cast(int)v.mesh.lod, v.mesh.quality * 100,
+                v.renderer.drawnVerts, v.mesh.bytes / (1024.0 * 1024.0));
+    }
+    return 0;
+}
+
 private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     SdlVideo video;
     if (video.open() != EngineError.None)
@@ -168,10 +357,13 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     if (ui.open(window.handle, ren.handle, scale) != EngineError.None)
         return 1;
 
+    Viewer v;
+    v.loadModel(ren, cfg);
+    v.state.mesh.textured = !cfg.flat;
+
     auto created = MapSession.create();
     if (created.isErr)
         return 1;
-    Viewer v;
     v.session = created.value;
     v.state.params = cfg.params;
     v.state.showPanel = !cfg.hasScreenshot;
@@ -186,31 +378,53 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     }
 
     updateViewport();
-    v.regenerate();
+    v.regenerate(ren.handle);
     if (v.session.tiles.rect.cols == 0)
         return 1; // the initial parameters were rejected
+    if (cfg.bench > 0) {
+        if (cfg.zoom > 0) {
+            v.camera.zoom = cfg.zoom;
+            v.camera.cx = (v.mesh.minX + v.mesh.maxX) * 0.5f;
+            v.camera.cy = (v.mesh.minY + v.mesh.maxY) * 0.5f;
+        }
+        return bench(ren, v, cfg.bench, cfg.slow);
+    }
+    if (cfg.zoom > 0) {
+        v.camera.zoom = cfg.zoom;
+        v.camera.cx = (v.mesh.minX + v.mesh.maxX) * 0.5f;
+        v.camera.cy = (v.mesh.minY + v.mesh.maxY) * 0.5f;
+    }
 
     immutable freq = cast(double)SDL_GetPerformanceFrequency();
     ulong last = SDL_GetPerformanceCounter();
+    bool firstFrame = true;
+    bool animating;
     while (v.running) {
         SDL_Event e;
         immutable capturing = ui.capturing();
-        while (SDL_PollEvent(&e)) {
+        // Idle frames cost nothing: sleep until an event arrives (a screenshot run never waits).
+        bool got = cfg.hasScreenshot ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e, animating ? 120 : 500);
+        immutable woke = got || firstFrame || animating;
+        firstFrame = false;
+        if (!woke)
+            continue;
+        while (got) {
             ui.handle(ren.handle, &e); // also converts e to render coordinates
             v.onEvent(e, capturing);
+            got = SDL_PollEvent(&e);
         }
         immutable wasPanel = v.state.showPanel;
-        drawPanel(ui, v.state, v.queue, *v.session, v.mesh, viewH);
+        drawPanel(ui, v.state, v.queue, *v.session, v.mesh, v.haveModel, viewH);
 
         bool screenshot = cfg.hasScreenshot;
         CommandKind cmd;
         while (v.queue.pop(cmd)) {
             final switch (cmd) {
             case CommandKind.regenerate:
-                v.regenerate();
+                v.regenerate(ren.handle);
                 break;
             case CommandKind.rebuildMesh:
-                v.rebuildMesh();
+                v.rebuildMesh(ren.handle);
                 break;
             case CommandKind.fitView:
                 v.fitView();
@@ -227,10 +441,21 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         if (wasPanel != v.state.showPanel)
             v.fitView();
 
-        SDL_SetRenderDrawColor(ren.handle, 24, 52, 78, 255);
+        SDL_SetRenderDrawColor(ren.handle, 128, 134, 153, 255);
         SDL_RenderClear(ren.handle);
-        v.renderer.draw(ren.handle, v.mesh, v.camera);
+        immutable drawStart = SDL_GetPerformanceCounter();
+        immutable shift = v.state.animateWater ? cast(float)(drawStart / freq * sparkleDrift) : 0.0f;
+        immutable wave = v.state.animateWater ? cast(float)(drawStart / freq * 2.2) : float.nan;
+        v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
+        immutable drawMs = cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
         v.state.drawnVerts = v.renderer.drawnVerts;
+        // Full-screen blending is the one cost that scales with pixels, so it goes first when the
+        // frame budget is tight.
+        if (v.state.vignette && v.mesh.quality > 0.5f)
+            drawVignette(ren.handle, v.camera);
+        if (v.state.vignette && v.mesh.quality > 0.5f && v.grain.handle !is null)
+            drawGrain(ren.handle, v.grain.handle, v.camera, drawStart);
+        animating = v.state.animateWater && v.renderer.sparkleVisible;
         ui.render();
         if (screenshot) {
             char[1100] path = void;
@@ -247,11 +472,13 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 return 0;
         }
         SDL_RenderPresent(ren.handle);
+        v.mesh.adapt(drawMs * cfg.slow, cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0)
+                * cfg.slow);
 
         immutable now = SDL_GetPerformanceCounter();
         immutable dt = (now - last) / freq;
         last = now;
-        if (dt > 0)
+        if (dt > 0 && dt < 0.25)
             v.state.fps = v.state.fps * 0.9f + cast(float)(1.0 / dt) * 0.1f;
     }
     return 0;

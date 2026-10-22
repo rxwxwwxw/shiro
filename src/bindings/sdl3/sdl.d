@@ -10,6 +10,8 @@ alias SDL_Keymod = ushort;
 
 struct SDL_Window;
 struct SDL_Renderer;
+struct SDL_Texture;
+struct SDL_IOStream;
 
 enum uint SDL_INIT_VIDEO = 0x20;
 
@@ -19,6 +21,10 @@ enum SDL_WindowFlags SDL_WINDOW_HIGH_PIXEL_DENSITY = 0x2000;
 
 struct SDL_FPoint {
     float x, y;
+}
+
+struct SDL_FRect {
+    float x, y, w, h;
 }
 
 struct SDL_FColor {
@@ -179,6 +185,29 @@ bool SDL_RenderLines(SDL_Renderer* renderer, const(SDL_FPoint)* points, int coun
 SDL_Surface* SDL_RenderReadPixels(SDL_Renderer* renderer, const(void)* rect);
 
 bool SDL_PollEvent(SDL_Event* event);
+
+SDL_IOStream* SDL_IOFromConstMem(const(void)* mem, size_t size);
+SDL_Surface* SDL_LoadPNG_IO(SDL_IOStream* src, bool closeio);
+SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);
+void SDL_DestroyTexture(SDL_Texture* texture);
+const(char)* SDL_GetBasePath();
+SDL_Surface* SDL_LoadPNG(const(char)* file);
+SDL_Surface* SDL_ConvertSurface(SDL_Surface* surface, uint format);
+SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, uint format, int access, int w, int h);
+bool SDL_UpdateTexture(SDL_Texture* texture, const(void)* rect, const(void)* pixels, int pitch);
+bool SDL_SetTextureScaleMode(SDL_Texture* texture, int scaleMode);
+bool SDL_SetTextureBlendMode(SDL_Texture* texture, uint blendMode);
+bool SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const(SDL_FRect)* srcrect,
+        const(SDL_FRect)* dstrect);
+SDL_Surface* SDL_LoadSurface(const(char)* file);
+bool SDL_SetRenderTextureAddressMode(SDL_Renderer* renderer, int uMode, int vMode);
+enum int SDL_TEXTURE_ADDRESS_AUTO = 0, SDL_TEXTURE_ADDRESS_WRAP = 2;
+bool SDL_WaitEventTimeout(SDL_Event* event, int timeoutMS);
+
+/// SDL_PIXELFORMAT_RGBA32 on little-endian machines (bytes in memory: R, G, B, A).
+enum uint SDL_PIXELFORMAT_RGBA32 = 0x16762004;
+enum int SDL_TEXTUREACCESS_STATIC = 0;
+enum int SDL_SCALEMODE_LINEAR = 1;
 
 bool SDL_SaveBMP(SDL_Surface* surface, const(char)* file);
 void SDL_DestroySurface(SDL_Surface* surface);

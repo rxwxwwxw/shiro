@@ -6,10 +6,11 @@ import bindings.nuklear.nuklear;
 import bindings.sdl3.sdl : SDL_Event, SDL_Renderer, SDL_Window;
 import core.result : EngineError;
 import core.stdc.stdio : snprintf;
-import gfx.hex_mesh : MapMesh;
+import gfx.hex_mesh : Lod, MapMesh;
 import viewer.commands;
 import wfc.grid_connector : MapRect;
 import wfc.map_session;
+import wfc.placement : maxSinks, maxSources;
 
 enum float panelWidth = 280;
 
@@ -62,7 +63,7 @@ private bool checkbox(nk_context* ctx, const(char)* label, ref bool v) @nogc not
 
 /// Draws the panel. Call between nk_input_end (done here) and NuklearContext.render.
 void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref const MapSession session,
-        ref const MapMesh mesh, float viewHeight) @nogc nothrow @trusted {
+        ref const MapMesh mesh, bool haveModel, float viewHeight) @nogc nothrow @trusted {
     auto ctx = ui.ctx;
     nk_input_end(ctx);
     if (!st.showPanel)
@@ -122,11 +123,34 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
 
     nk_layout_row_dynamic(ctx, 8, 1);
     nk_layout_row_dynamic(ctx, 18, 1);
+    nk_label(ctx, "Tower defense (applies on regenerate)", NK_TEXT_LEFT);
+    nk_layout_row_dynamic(ctx, 22, 1);
+    checkbox(ctx, "Roads, sources & sinks", p.routes.enabled);
+    if (p.routes.enabled) {
+        nk_layout_row_dynamic(ctx, 24, 2);
+        nk_property_int(ctx, "Sources:", 1, &p.routes.place.sources, maxSources, 1, 0.1f);
+        nk_property_int(ctx, "Sinks:", 1, &p.routes.place.sinks, maxSinks, 1, 0.1f);
+        nk_property_int(ctx, "Loops:", 0, &p.routes.loops, 8, 1, 0.1f);
+        nk_property_int(ctx, "Waypoints:", 0, &p.routes.waypoints, 4, 1, 0.1f);
+        nk_property_int(ctx, "Bendiness:", 0, &p.routes.bendiness, 1000, 10, 2);
+        nk_property_int(ctx, "Affinity:", 0, &p.routes.affinity, 300, 5, 1);
+        nk_property_int(ctx, "Wall depth:", 0, &p.routes.wallDepth, 4, 1, 0.1f);
+        nk_property_int(ctx, "Edge margin:", 1, &p.routes.place.edgeMargin, 20, 1, 0.1f);
+        nk_layout_row_dynamic(ctx, 22, 1);
+        checkbox(ctx, "Terrain walls (cliff, river, coast)", p.routes.flankTerrain);
+    }
+
+    nk_layout_row_dynamic(ctx, 8, 1);
+    nk_layout_row_dynamic(ctx, 18, 1);
     nk_label(ctx, "View", NK_TEXT_LEFT);
     nk_layout_row_dynamic(ctx, 22, 1);
     bool meshChanged = checkbox(ctx, "Decorations", st.mesh.decorations);
+    if (haveModel)
+        meshChanged |= checkbox(ctx, "Hex-Map-WFC models", st.mesh.textured);
     meshChanged |= checkbox(ctx, "Cell outlines", st.mesh.outlines);
     meshChanged |= checkbox(ctx, "Level colors", st.mesh.levelColors);
+    checkbox(ctx, "Animate water", st.animateWater);
+    checkbox(ctx, "Vignette", st.vignette);
     if (meshChanged)
         q.push(CommandKind.rebuildMesh);
     nk_layout_row_dynamic(ctx, 28, 2);
@@ -143,7 +167,20 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     labelf(ctx, "Grids solved %zu, failed %zu", s.gridsSolved, s.gridsFailed);
     labelf(ctx, "Unsolved %zu, mountains %zu", s.cellsUnsolved, map.countMountains);
     labelf(ctx, "Generated in %.1f ms", session.genMillis);
-    labelf(ctx, "Mesh %zu verts, %.1f MB", mesh.vertexCount, mesh.bytes / (1024.0 * 1024.0));
+    if (session.params.routes.enabled) {
+        const rr = &session.routeReport;
+        const net = &session.network();
+        labelf(ctx, "Routes %d (%d loops), %zu road cells", net.numRoutes, net.numLoops, net.roadCellCount);
+        labelf(ctx, "Sources %d/%d to sink, sinks %d/%d reached", rr.sourcesConnected, rr.sources,
+                rr.sinksReached, rr.sinks);
+        labelf(ctx, "%s after %d attempt(s), leaks %zu", rr.ok ? "Valid".ptr : "INVALID".ptr,
+                session.routeAttempts, rr.leakCells);
+    }
+    static immutable char*[4] lodNames = [
+        "overview image", "plain shapes", "flat shapes", "terrain models"
+    ];
+    labelf(ctx, "Detail: %s (quality %.0f%%)", lodNames[mesh.lod], mesh.quality * 100);
+    labelf(ctx, "Cached %zu verts, %.1f MB", mesh.vertexCount, mesh.bytes / (1024.0 * 1024.0));
     labelf(ctx, "%.0f fps, %zu verts drawn", st.fps, st.drawnVerts);
     nk_layout_row_dynamic(ctx, 8, 1);
     nk_layout_row_dynamic(ctx, 16, 1);

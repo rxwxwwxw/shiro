@@ -17,12 +17,13 @@ import tests.harness;
 import tests.test_wfc_multi_grid;
 import tests.test_wfc_single_grid;
 import tests.tileset_audit;
+import tests.test_routes;
 
 // Pull every module's unit tests into the build.
 import core.bitset, core.noise, core.random, core.result;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
-    wfc.recovery, viewer.cli, viewer.commands, gfx.iso, gfx.camera, gfx.hex_mesh, wfc.solver,
-    wfc.tile_data, wfc.tile_map;
+    wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
+    viewer.commands, gfx.iso, gfx.camera, gfx.hex_mesh, wfc.solver, wfc.tile_data, wfc.tile_map;
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];
@@ -48,6 +49,9 @@ int main(string[] args) {
     tests.test_wfc_single_grid.run(&rules, rep, full ? 1000 : 100);
     printf("multi grid (%s)\n", full ? "full".ptr : "quick".ptr);
     tests.test_wfc_multi_grid.run(&rules, rep, full ? 1000 : 50, full ? 20 : 3);
+
+    printf("routes (%s)\n", full ? "full".ptr : "quick".ptr);
+    tests.test_routes.run(rep, full ? 40 : 5);
 
     rep.check(withinMemory(memoryCeilingMiB, "integration"), "peak memory under ceiling");
     printf("integration: %d passed, %d failed, peak RSS %d MiB (ceiling %d MiB, timeout %d s)\n",

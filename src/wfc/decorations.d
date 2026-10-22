@@ -11,6 +11,8 @@ module wfc.decorations;
 import core.noise : SimplexNoise;
 import wfc.grid_connector : MapRect;
 import wfc.hex;
+import wfc.road_rules : dirBit;
+import wfc.routes : RoadNetwork;
 import wfc.rules;
 import wfc.tile_data;
 import wfc.tile_map;
@@ -23,7 +25,19 @@ enum DecoKind : ubyte {
     building,
     windmill,
     bridge,
-    mountain
+    mountain,
+    /// Creep spawn point (a road endpoint).
+    source,
+    /// Creep goal (a road endpoint).
+    sink,
+    /// Rock wall beside a road on walkable non-flat ground.
+    rock
+}
+
+/// Decorations ground creeps cannot walk through.
+bool blocksGround(DecoKind k) @nogc nothrow pure @safe {
+    return k == DecoKind.tree || k == DecoKind.building || k == DecoKind.windmill
+        || k == DecoKind.mountain || k == DecoKind.rock;
 }
 
 /// One decoration slot per cell. Packs into 16 bits: kind(4) variant(4) facing(3) extra(3).
@@ -287,6 +301,55 @@ struct DecorationMap {
     }
 }
 
+/// Marks road endpoints and walls the roads in: every ground-walkable cell within `wallDepth` of
+/// a road that is not itself a road becomes dense forest (flat grass) or rock (slopes), so ground
+/// creeps can only travel along the roads. Cells that already block (water, cliffs, trees,
+/// buildings) are kept as they are.
+void applyCorridors(ref DecorationMap decos, ref const TileMap tiles, ref const RoadNetwork net,
+        const(AdjacencyRules)* rules, int wallDepth, uint seed) @nogc nothrow @trusted {
+    immutable rect = tiles.rect;
+    if (!net.allocated)
+        return;
+    if (wallDepth > 4)
+        wallDepth = 4;
+    CubeCoord[cellsInRadius(4)] ball = void;
+    foreach (i; 0 .. rect.cellCount) {
+        immutable c = rect.cellAt(i);
+        if (!net.onNetwork(c))
+            continue;
+        if (net.isSource(c) || net.isSink(c)) {
+            HexDir face = HexDir.NE;
+            immutable dirs = net.roadDirs(c);
+            foreach (d; 0 .. numHexDirs)
+                if (dirs & dirBit(cast(HexDir)d)) {
+                    face = cast(HexDir)d;
+                    break;
+                }
+            if (!tiles.isMountain(c))
+                decos.set(c, Decoration(net.isSource(c) ? DecoKind.source : DecoKind.sink, 0, face, 0));
+        }
+        if (wallDepth <= 0)
+            continue;
+        immutable n = cubeCoordsInRadius(c, wallDepth, ball[]);
+        foreach (k; 0 .. n) {
+            immutable w = ball[k];
+            if (!rect.contains(w) || net.onNetwork(w))
+                continue;
+            immutable id = tiles.get(w);
+            if (id < 0)
+                continue;
+            immutable st = rules.states[id];
+            if (!groundWalkable(st.tile) || blocksGround(decos.get(w).kind))
+                continue;
+            immutable h = hash3(cast(uint)w.q, cast(uint)w.r, seed ^ 0x51ED27u);
+            if (st.tile == 0)
+                decos.set(w, Decoration(DecoKind.tree, cast(ubyte)(h & 1), HexDir.NE, 3));
+            else
+                decos.set(w, Decoration(DecoKind.rock, cast(ubyte)((h >> 4) % 3), cast(HexDir)(h % 6), 0));
+        }
+    }
+}
+
 // ---- tests -----------------------------------------------------------------------------------
 
 version (unittest) {
@@ -412,6 +475,11 @@ unittest {
             case DecoKind.mountain:
                 assert(tiles.isMountain(c));
                 break;
+            case DecoKind.source:
+            case DecoKind.sink:
+            case DecoKind.rock:
+                assert(false,
+                        "corridor decorations need applyCorridors");
             }
         }
     assert(grass > 0);

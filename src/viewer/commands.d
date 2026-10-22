@@ -69,6 +69,10 @@ struct ViewerState {
     /// Panel helper: target cell count for the 16:9 button.
     int targetCells = 5000;
     bool showPanel = true;
+    /// Drift the water sparkle (needs a few redraws a second while water is visible).
+    bool animateWater = true;
+    /// Darken the screen edges like the reference's post-processing vignette.
+    bool vignette = true;
     float fps = 0;
     size_t drawnVerts;
 }
