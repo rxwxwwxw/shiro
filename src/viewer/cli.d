@@ -4,6 +4,7 @@ module viewer.cli;
 import core.result;
 import wfc.grid_connector : MapRect;
 import wfc.map_session : GenParams, Layout;
+import wfc.placement : maxSinks, maxSources;
 
 enum CliError : int {
     none,
@@ -22,6 +23,17 @@ struct ViewerConfig {
     /// Non-empty: render one frame to this BMP and exit. NUL-terminated.
     char[1024] screenshot = 0;
     bool hasScreenshot;
+    /// Start with the flat-shaded procedural look instead of the terrain model.
+    bool flat;
+    /// Screen pixels per world unit to start at (0 = fit the map).
+    int zoom;
+    /// Frames for the --bench frame-time run (0 = normal viewer).
+    int bench;
+    /// Multiplies measured draw times before quality adaptation, to try a slower machine.
+    float slow = 1.0f;
+    /// Directory holding models/hex-terrain.glb. NUL-terminated.
+    char[1024] assets = 0;
+    bool hasAssets;
 }
 
 immutable string usage = "usage: shiro_viewer [options]
@@ -32,8 +44,15 @@ immutable string usage = "usage: shiro_viewer [options]
   --radius N             WFC grid radius in cells (default 8)
   --rings N              island rings of grids (default 2 = 19 grids)
   --seed N               random seed (default 1)
+  --sources N --sinks N  creep sources and sinks, 1..16 each (default 2 and 1)
+  --no-roads             plain terrain without sources, sinks and roads
   --width N --height N   window size (default 1440 x 900)
   --screenshot PATH      render one frame to a BMP and exit
+  --assets DIR           Hex-Map-WFC assets directory (default third-party/Hex-Map-WFC/public/assets)
+  --zoom N               start zoomed to N pixels per world unit (default: fit the map)
+  --bench N              time N still and N panning frames (ms), print, exit
+  --slow N               pretend draws take N times longer (tests the quality adaptation)
+  --flat                 flat-shaded shapes instead of the Hex-Map-WFC models
 ";
 
 private bool parseInt(const(char)[] s, out int v) @nogc nothrow pure @safe {
@@ -67,6 +86,14 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
         immutable a = args[i];
         if (a == "--help" || a == "-h")
             return R.err(CliError.help);
+        if (a == "--flat") {
+            cfg.flat = true;
+            continue;
+        }
+        if (a == "--no-roads") {
+            cfg.params.routes.enabled = false;
+            continue;
+        }
         if (i + 1 >= args.length)
             return R.err(a.length > 2 && a[0 .. 2] == "--" ? CliError.missingValue : CliError.unknownFlag);
         immutable val = args[++i];
@@ -139,6 +166,38 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.screenshot[val.length] = 0;
             cfg.hasScreenshot = val.length > 0;
             break;
+        case "--sources":
+            if (!num() || n < 1 || n > maxSources)
+                return R.err(CliError.badNumber);
+            cfg.params.routes.place.sources = n;
+            break;
+        case "--sinks":
+            if (!num() || n < 1 || n > maxSinks)
+                return R.err(CliError.badNumber);
+            cfg.params.routes.place.sinks = n;
+            break;
+        case "--zoom":
+            if (!num() || n < 1)
+                return R.err(CliError.badNumber);
+            cfg.zoom = n;
+            break;
+        case "--bench":
+            if (!num() || n < 1)
+                return R.err(CliError.badNumber);
+            cfg.bench = n;
+            break;
+        case "--slow":
+            if (!num() || n < 1)
+                return R.err(CliError.badNumber);
+            cfg.slow = n;
+            break;
+        case "--assets":
+            if (val.length + 1 > cfg.assets.length)
+                return R.err(CliError.pathTooLong);
+            cfg.assets[0 .. val.length] = val[];
+            cfg.assets[val.length] = 0;
+            cfg.hasAssets = val.length > 0;
+            break;
         default:
             return R.err(CliError.unknownFlag);
         }
@@ -168,6 +227,25 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     assert(c.params.layout == Layout.island && c.params.radius == 6 && c.params.rings == 1);
     assert(c.params.seed == 77 && c.width == 800 && c.hasScreenshot);
     assert(c.screenshot[0 .. 8] == "out.bmp\0");
+}
+
+@nogc nothrow @safe unittest {
+    // Source and sink counts, range-checked; --no-roads takes no value.
+    immutable string[5] a = ["--sources", "5", "--sinks", "3", "--no-roads"];
+    auto r = parseArgs(a[]);
+    assert(r.isOk && r.value.params.routes.place.sources == 5 && r.value.params.routes.place.sinks == 3);
+    assert(!r.value.params.routes.enabled);
+    immutable string[2] bad = ["--sinks", "0"];
+    assert(parseArgs(bad[]).error == CliError.badNumber);
+    immutable string[2] big = ["--sources", "17"];
+    assert(parseArgs(big[]).error == CliError.badNumber);
+}
+
+@nogc nothrow @safe unittest {
+    // --flat takes no value; --assets does.
+    immutable string[3] a = ["--flat", "--assets", "some/dir"];
+    auto r = parseArgs(a[]);
+    assert(r.isOk && r.value.flat && r.value.hasAssets && r.value.assets[0 .. 9] == "some/dir\0");
 }
 
 @nogc nothrow @safe unittest {
