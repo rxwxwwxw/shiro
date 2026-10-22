@@ -217,9 +217,9 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 * [x] Colocated unit tests verifying table symmetry and rule generation.
 
 ### Phase 4: Headless WFC Solver with Backtracking
-* [ ] Create `src/wfc/cell.d`:
+* [x] Create `src/wfc/cell.d`:
   - `HexWFCCell` storing remaining possibilities (`BitSet1024`), collapsed state, and entropy.
-* [ ] Create `src/wfc/solver.d`:
+* [x] Create `src/wfc/solver.d`:
   - Pre-allocated arrays for cells, neighbors, propagation stack, decision stack, and trail.
   - No-chaining pruning for tiles with `preventChaining = true` (e.g. cross roads, river bends).
   - Entropy search with pseudo-random perturbation for tie-breaking.
