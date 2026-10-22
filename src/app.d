@@ -459,7 +459,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         // frame budget is tight.
         if (v.state.vignette && v.mesh.quality > 0.5f)
             drawVignette(ren.handle, v.camera);
-        if (v.state.vignette && v.mesh.quality > 0.5f && v.grain.handle !is null)
+        if (v.state.grain && v.mesh.quality > 0.5f && v.grain.handle !is null)
             drawGrain(ren.handle, v.grain.handle, v.camera, drawStart);
         animating = v.state.animateWater && v.renderer.sparkleVisible;
         ui.render();

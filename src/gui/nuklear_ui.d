@@ -151,6 +151,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     meshChanged |= checkbox(ctx, "Level colors", st.mesh.levelColors);
     checkbox(ctx, "Animate water", st.animateWater);
     checkbox(ctx, "Vignette", st.vignette);
+    checkbox(ctx, "Film grain", st.grain);
     if (meshChanged)
         q.push(CommandKind.rebuildMesh);
     nk_layout_row_dynamic(ctx, 28, 2);

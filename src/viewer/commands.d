@@ -73,6 +73,8 @@ struct ViewerState {
     bool animateWater = true;
     /// Darken the screen edges like the reference's post-processing vignette.
     bool vignette = true;
+    /// Animated film grain over the map (the reference's noise pass); off by default, it reads as a dirty window.
+    bool grain = false;
     float fps = 0;
     size_t drawnVerts;
 }
