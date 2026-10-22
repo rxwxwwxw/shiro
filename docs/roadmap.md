@@ -259,12 +259,15 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 
 
 ### Phase 7: Procedural Noise & Decoration Placement
-* [ ] Create `src/wfc/decorations.d`:
+* [x] Create `src/wfc/decorations.d`:
   - Multi-octave Simplex noise sampling for organic clustering.
   - Forest placement on grass tiles exceeding tree noise threshold.
   - Village & windmill placement along road networks.
   - Bridge placement across river crossings.
   - Mountain placement on dropped constraint cells to mask terrain discontinuities.
+
+**Phase 7 notes (implemented):** decorations are a pure function of the tile map, the seed and the cell coordinate (noise plus a coordinate hash), stored as one 16-bit slot per cell in `DecorationMap`. Meshes are not modelled (View layer); a slot says kind, variant, facing and density tier. Villages use a third noise field with a higher threshold than forests; dead-end roads always get a building facing the road; coast windmills face the water; crossings get bridges; mountain-flagged cells get mountains. Thresholds were tuned for the 2-octave field (trees 0.55, buildings 0.74).
+
 
 ### Phase 8: Tileset Audit Tool & Headless Integration Tests
 * [ ] Create `tests/tileset_audit.d`:
