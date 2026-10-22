@@ -24,3 +24,7 @@ __dummy.html
 *.lst
 
 .DS_STORE
+
+# Build outputs
+/build/
+/bin/

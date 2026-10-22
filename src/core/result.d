@@ -53,7 +53,7 @@ struct Result(T, E = EngineError) {
         return _error;
     }
 
-    T valueOr(T fallback) const @nogc nothrow @trusted {
+    inout(T) valueOr(inout(T) fallback) inout @nogc nothrow @trusted {
         return _isOk ? _value : fallback;
     }
 }

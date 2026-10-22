@@ -115,3 +115,20 @@ Design the D implementation around these components:
   - **Propagator**: An explicit propagation stack or queue. When a cell collapses or loses a possibility, its 6 neighbors are checked against constraint tables, pushing affected cells into the queue.
   - **Contradiction Handling**: Return a `Result` type or error code indicating contradiction, triggering a grid restart or stepping back down a snapshot stack.
 
+
+---
+
+## Map Viewer (SDL3 + Nuklear)
+
+A pseudo-3D viewer for the generated maps. Its side panel sets the layout (rectangle or island), size, grid radius, seed and decoration parameters.
+
+```bash
+brew install cmake                 # or: sudo apt install cmake
+scripts/build_third_party.sh       # builds third-party/SDL3 into build/third-party/install
+scripts/build_viewer.sh            # builds bin/shiro_viewer (--debug, --asan)
+bin/shiro_viewer --layout island --radius 8 --rings 2 --seed 7
+bin/shiro_viewer --cells 20000 --aspect 16:9 --radius 6
+bin/shiro_viewer --cols 120 --rows 60 --screenshot map.bmp   # render one frame and exit
+```
+
+Controls: drag to pan, wheel or `+`/`-` to zoom, `R` new seed, `F` fit, `O` cell outlines, `Tab` toggle panel, `Esc` quit. The POSIX scripts are the only build path for now; a Windows `.bat` hasn't been written yet.
