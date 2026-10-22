@@ -348,7 +348,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY) != EngineError.None)
         return 1;
     Renderer ren;
-    if (ren.open(window) != EngineError.None)
+    if (ren.open(window, !cfg.classic) != EngineError.None)
         return 1;
     // Render in window points; the high-density backbuffer keeps it sharp.
     immutable scale = SDL_GetWindowDisplayScale(window.handle) > 0 ? SDL_GetWindowDisplayScale(window.handle) : 1.0f;
@@ -358,6 +358,12 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         return 1;
 
     Viewer v;
+    if (ren.gpu) {
+        if (v.renderer.gpu.open(ren.handle))
+            printf("GPU renderer: %s\n", SDL_GetGPUDeviceDriver(SDL_GetGPURendererDevice(ren.handle)));
+        else
+            fprintf(stderr, "GPU mesh path unavailable (%s); drawing geometry on the CPU\n", SDL_GetError());
+    }
     v.loadModel(ren, cfg);
     v.state.mesh.textured = !cfg.flat;
 

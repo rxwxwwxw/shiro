@@ -126,6 +126,9 @@ private struct Chunk {
     uint nov, noi;
     uint lastFrame;
     bool built;
+    /// Retained GPU copy of the chunk (owned by the GPU renderer), freed with `gpuFree`.
+    void* gpu;
+    void function(void*) @nogc nothrow gpuFree;
 }
 
 /// Cells on screen up to which each level of detail is used.
@@ -134,6 +137,7 @@ private enum float modelMaxCells = 8000, flatMaxCells = 12000, plainMaxCells = 3
 /// Draw-call CPU time and whole-frame time the viewer tries to stay under, in ms (24 keeps 60 Hz
 /// vsync well clear while catching software rendering).
 private enum float drawBudgetMs = 10.0f, frameBudgetMs = 24.0f;
+private enum uint recoverDelayFrames = 90;
 private enum size_t cacheBudget = 160 << 20;
 
 /// The map as drawable geometry. Nothing is built up front: a chunk of up to `blockCols` cells of
@@ -151,7 +155,7 @@ struct MapMesh {
     /// Scales the cell counts the detail levels allow; adapt() lowers it when frames run long.
     float quality = 1.0f;
     private float drawMsAvg = 0, frameMsAvg = 0;
-    private uint frameNo;
+    private uint frameNo, builtThisFrame, recoverAt;
     private size_t cacheVerts, cacheBytes;
     private MeshVert* verts;
     private int* indices;
@@ -261,6 +265,8 @@ struct MapMesh {
     private void freeChunk(ref Chunk c) @nogc nothrow @trusted {
         if (!c.built)
             return;
+        if (c.gpu !is null)
+            c.gpuFree(c.gpu);
         free(c.v);
         free(c.idx);
         free(c.ov);
@@ -306,16 +312,24 @@ struct MapMesh {
     /// two-hundred-fiftieth); with headroom they recover slowly, so a slow machine settles on the richest level
     /// of detail it can sustain.
     void adapt(float drawMs, float frameMs) @nogc nothrow pure @safe {
+        // A frame that had to generate chunks is a one-off (panning, zooming, a new map), not what
+        // the view costs to keep drawing, so it must not drag the quality down.
+        if (builtThisFrame != 0)
+            return;
         drawMsAvg = drawMsAvg * 0.85f + drawMs * 0.15f;
         frameMsAvg = frameMsAvg * 0.85f + frameMs * 0.15f;
-        if (drawMsAvg > drawBudgetMs || frameMsAvg > frameBudgetMs)
+        if (drawMsAvg > drawBudgetMs || frameMsAvg > frameBudgetMs) {
             quality = quality * 0.92f < 0.004f ? 0.004f : quality * 0.92f;
-        else if (drawMsAvg < drawBudgetMs * 0.5f && frameMsAvg < frameBudgetMs * 0.75f && quality < 1.0f)
+            // Richer levels cost more, so recovering right away would flap between two levels.
+            recoverAt = frameNo + recoverDelayFrames;
+        } else if (frameNo >= recoverAt && drawMsAvg < drawBudgetMs * 0.6f
+                && frameMsAvg < frameBudgetMs * 0.75f && quality < 1.0f)
             quality = quality * 1.02f > 1.0f ? 1.0f : quality * 1.02f;
     }
 
     void beginFrame() @nogc nothrow pure @safe {
         frameNo++;
+        builtThisFrame = 0;
     }
 
     /// Trims the cache to the chunks the finished frame used, if it grew over budget.
@@ -343,7 +357,21 @@ struct MapMesh {
         return true;
     }
 
+    /// The GPU copy of an already built chunk, or null.
+    void* gpuHandle(int row, int block) @nogc nothrow @trusted {
+        return chunks[cast(size_t)row * blockCount + block].gpu;
+    }
+
+    /// Hands a built chunk's GPU copy to the mesh, which frees it with `release` when the chunk goes.
+    void attachGpu(int row, int block, void* handle, void function(void*) @nogc nothrow release) @nogc nothrow @trusted {
+        auto c = &chunks[cast(size_t)row * blockCount + block];
+        assert(c.built && c.gpu is null);
+        c.gpu = handle;
+        c.gpuFree = release;
+    }
+
     private bool buildChunk(int row, int block, ref Chunk c) @nogc nothrow @trusted {
+        builtThisFrame++;
         nVerts = nIdx = nOv = nOi = 0;
         rowStart = 0;
         oom = false;

@@ -50,8 +50,20 @@ struct Renderer {
 
     @disable this(this);
 
-    EngineError open(ref Window window) @nogc nothrow @trusted {
-        handle = SDL_CreateRenderer(window.handle, null);
+    /// True when the renderer runs on an SDL_gpu device (the retained-buffer mesh path needs one).
+    bool gpu;
+
+    /// Prefers a GPU renderer (Metal / Vulkan / D3D12, one code path everywhere) and falls back to
+    /// SDL's default 2D renderer if no GPU device is available or `allowGpu` is false.
+    EngineError open(ref Window window, bool allowGpu = true) @nogc nothrow @trusted {
+        if (allowGpu) {
+            handle = SDL_CreateGPURenderer(null, window.handle);
+            gpu = handle !is null;
+            if (!gpu)
+                fprintf(stderr, "no GPU renderer (%s); using the default 2D renderer\n", SDL_GetError());
+        }
+        if (handle is null)
+            handle = SDL_CreateRenderer(window.handle, null);
         if (handle is null)
             return fail("SDL_CreateRenderer");
         SDL_SetRenderVSync(handle, 1);

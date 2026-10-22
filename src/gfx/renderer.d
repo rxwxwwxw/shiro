@@ -8,6 +8,7 @@ import bindings.sdl3.sdl;
 import core.stdc.math : sinf;
 import core.stdc.stdlib : free, realloc;
 import gfx.camera;
+import gfx.gpu_scene;
 import gfx.hex_mesh;
 import gfx.iso;
 import gfx.overview;
@@ -16,6 +17,10 @@ struct MapRenderer {
     private SDL_Vertex* sv;
     private int* si;
     private SDL_Texture* tex;
+    /// Retained-buffer GPU path; when it is ready the scratch buffers below are unused.
+    GpuScene gpu;
+    /// Clear color of the GPU path's offscreen target (the viewer's background).
+    float[3] background = [128 / 255.0f, 134 / 255.0f, 153 / 255.0f];
     private size_t capV, capI, nV, nI;
     /// Vertices drawn last frame (for the stats readout).
     size_t drawnVerts;
@@ -78,6 +83,52 @@ struct MapRenderer {
             si[nI++] = i + base;
     }
 
+    /// Draws the visible chunks from their retained GPU buffers, uploading any that are new. False
+    /// if the offscreen target could not be set up (the caller then draws the classic way).
+    private bool drawGpu(SDL_Renderer* r, SDL_Texture* texture, SDL_Texture* caustic,
+            ref MapMesh mesh, ref const Camera cam, Lod lod, int r0, int r1, int b0, int b1,
+            float sparkleShift, float wave) @nogc nothrow @trusted {
+        foreach (row; r0 .. r1 + 1)
+            foreach (block; b0 .. b1 + 1) {
+                const(MeshVert)[] v, ov;
+                const(int)[] idx, oidx;
+                if (!mesh.chunk(row, block, v, idx, ov, oidx) || mesh.gpuHandle(row, block) !is null)
+                    continue;
+                if (idx.length == 0 && oidx.length == 0)
+                    continue;
+                if (auto h = gpu.upload(v, idx, ov, oidx))
+                    mesh.attachGpu(row, block, h, &releaseChunk);
+            }
+        immutable w = cam.x0 + cam.width, h = cam.height, z = cam.zoom;
+        immutable ox = cam.x0 + cam.width * 0.5f - cam.cx * z, oy = h * 0.5f - cam.cy * z;
+        immutable float[4] xf = [2 * z / w, -2 * z / h, 2 * ox / w - 1, 1 - 2 * oy / h];
+        if (!gpu.begin(w, h, background, xf))
+            return false;
+        SDL_Texture* mainTex = lod == Lod.model ? texture : null;
+        foreach (row; r0 .. r1 + 1)
+            foreach (block; b0 .. b1 + 1) {
+                const(MeshVert)[] v, ov;
+                const(int)[] idx, oidx;
+                if (!mesh.chunk(row, block, v, idx, ov, oidx))
+                    continue;
+                const chunk = mesh.gpuHandle(row, block);
+                if (chunk is null)
+                    continue;
+                if (idx.length != 0) {
+                    gpu.draw(chunk, 0, 0, cast(uint)idx.length, mainTex);
+                    drawnVerts += v.length;
+                }
+                if (oidx.length != 0 && caustic !is null && lod == Lod.model) {
+                    gpu.draw(chunk, cast(uint)v.length, cast(uint)idx.length,
+                            cast(uint)oidx.length, caustic, true, sparkleShift, wave);
+                    drawnVerts += ov.length;
+                    sparkleVisible = true;
+                }
+            }
+        gpu.end(w, h);
+        return true;
+    }
+
     /// `texture` is the model atlas (model level of detail), `caustic` the tiled water sparkle.
     void draw(SDL_Renderer* r, SDL_Texture* texture, SDL_Texture* caustic,
             ref const Overview overview, ref MapMesh mesh, ref const Camera cam, float sparkleShift = 0,
@@ -87,13 +138,13 @@ struct MapRenderer {
         nV = nI = 0;
         if (mesh.rows == 0)
             return;
+        mesh.beginFrame();
         immutable lod = mesh.pick(cam);
         if (lod == Lod.overview) {
             overview.draw(r, cam);
             return;
         }
         tex = lod == Lod.model ? texture : null;
-        mesh.beginFrame();
         immutable top = cam.toWorld(0, 0).y, bottom = cam.toWorld(0, cam.height).y;
         immutable left = cam.toWorld(cam.x0, 0).x, right = cam.toWorld(cam.x0 + cam.width, 0).x;
         immutable pitch = MapMesh.rowY(1);
@@ -109,6 +160,10 @@ struct MapRenderer {
 
         immutable z = cam.zoom, ox = cam.x0 + cam.width * 0.5f - cam.cx * z;
         immutable oy = cam.height * 0.5f - cam.cy * z;
+        if (gpu.ready && drawGpu(r, texture, caustic, mesh, cam, lod, r0, r1, b0, b1, sparkleShift, wave)) {
+            mesh.endFrame();
+            return;
+        }
         foreach (row; r0 .. r1 + 1)
             foreach (block; b0 .. b1 + 1) {
                 const(MeshVert)[] v, ov;

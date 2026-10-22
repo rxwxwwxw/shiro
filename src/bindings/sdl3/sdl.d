@@ -173,6 +173,11 @@ float SDL_GetWindowDisplayScale(SDL_Window* window);
 bool SDL_GetWindowSize(SDL_Window* window, int* w, int* h);
 
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, const(char)* name);
+/// A 2D renderer on an SDL_gpu device (Metal, Vulkan, D3D12); the device is created when null.
+SDL_Renderer* SDL_CreateGPURenderer(void* device, SDL_Window* window);
+void* SDL_GetGPURendererDevice(SDL_Renderer* renderer);
+const(char)* SDL_GetGPUDeviceDriver(void* device);
+bool SDL_GetRenderScale(SDL_Renderer* renderer, float* scaleX, float* scaleY);
 void SDL_DestroyRenderer(SDL_Renderer* renderer);
 bool SDL_SetRenderVSync(SDL_Renderer* renderer, int vsync);
 bool SDL_SetRenderScale(SDL_Renderer* renderer, float scaleX, float scaleY);
@@ -206,7 +211,7 @@ bool SDL_WaitEventTimeout(SDL_Event* event, int timeoutMS);
 
 /// SDL_PIXELFORMAT_RGBA32 on little-endian machines (bytes in memory: R, G, B, A).
 enum uint SDL_PIXELFORMAT_RGBA32 = 0x16762004;
-enum int SDL_TEXTUREACCESS_STATIC = 0;
+enum int SDL_TEXTUREACCESS_STATIC = 0, SDL_TEXTUREACCESS_TARGET = 2;
 enum int SDL_SCALEMODE_LINEAR = 1;
 
 bool SDL_SaveBMP(SDL_Surface* surface, const(char)* file);
@@ -216,5 +221,5 @@ ulong SDL_GetPerformanceCounter();
 ulong SDL_GetPerformanceFrequency();
 bool SDL_GetCurrentRenderOutputSize(SDL_Renderer* renderer, int* w, int* h);
 
-enum uint SDL_BLENDMODE_BLEND = 0x1;
+enum uint SDL_BLENDMODE_NONE = 0x0, SDL_BLENDMODE_BLEND = 0x1;
 bool SDL_SetRenderDrawBlendMode(SDL_Renderer* renderer, uint blendMode);

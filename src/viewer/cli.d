@@ -25,6 +25,8 @@ struct ViewerConfig {
     bool hasScreenshot;
     /// Start with the flat-shaded procedural look instead of the terrain model.
     bool flat;
+    /// Use SDL's default 2D renderer and CPU-expanded geometry instead of the GPU renderer.
+    bool classic;
     /// Screen pixels per world unit to start at (0 = fit the map).
     int zoom;
     /// Frames for the --bench frame-time run (0 = normal viewer).
@@ -52,6 +54,7 @@ immutable string usage = "usage: shiro_viewer [options]
   --zoom N               start zoomed to N pixels per world unit (default: fit the map)
   --bench N              time N still and N panning frames (ms), print, exit
   --slow N               pretend draws take N times longer (tests the quality adaptation)
+  --classic              default SDL 2D renderer, CPU-expanded geometry (for comparison)
   --flat                 flat-shaded shapes instead of the Hex-Map-WFC models
 ";
 
@@ -88,6 +91,10 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             return R.err(CliError.help);
         if (a == "--flat") {
             cfg.flat = true;
+            continue;
+        }
+        if (a == "--classic") {
+            cfg.classic = true;
             continue;
         }
         if (a == "--no-roads") {
