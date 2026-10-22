@@ -548,6 +548,14 @@ struct Game {
             waveTick++;
     }
 
+    /// Benchmark / test hook: spawns a creep at source `src` outside any wave. Returns its slot,
+    /// or -1 when the pool is full.
+    int inject(CreepKind kind, int src) @nogc nothrow @trusted {
+        if (!active || board_.numSources == 0)
+            return -1;
+        return spawn(kind, src % board_.numSources);
+    }
+
     /// Spawns a creep at source `src`; returns its slot or -1 when the pool is full.
     private int spawn(CreepKind kind, int src) @nogc nothrow @trusted {
         return spawnAt(kind, cast(uint)board_.rect.index(board_.sources[src]));

@@ -269,10 +269,10 @@ struct CreepStats {
 }
 
 immutable CreepStats[numCreepKinds] creepTable = [
-    CreepStats("Grunt", 60, 34, 0, 4, 1, 10, 18, 0), CreepStats("Runner", 35, 62, 0, 4, 1, 10, 12,
+    CreepStats("Grunt", 60, 34, 0, 5, 1, 10, 18, 0), CreepStats("Runner", 35, 62, 0, 5, 1, 10, 12,
             0), CreepStats("Brute", 200, 22, 45, 10, 2, 30, 30, 20),
     CreepStats("Swarmling", 18, 44, 0, 1, 1, 3, 6, 0),
-    CreepStats("Boss", 2000, 16, 30, 120, 10, 0, 60, 50)
+    CreepStats("Boss", 1500, 16, 30, 150, 5, 0, 60, 50)
 ];
 
 ref immutable(CreepStats) creepStats(CreepKind k) @nogc nothrow pure @safe {
@@ -331,7 +331,7 @@ int scaledHp(CreepKind k, int wave) @nogc nothrow pure @safe {
 }
 
 /// Economy.
-enum int startGold = 250;
+enum int startGold = 300;
 enum int startLives = 20;
 enum int totalWaves = 30;
 /// Ticks before the first wave, and between waves.
@@ -340,7 +340,7 @@ enum int waveBreak = 15 * ticksPerSecond;
 
 /// Gold for clearing wave `wave`.
 int waveClearBonus(int wave) @nogc nothrow pure @safe {
-    return 20 + 2 * wave;
+    return 30 + 3 * wave;
 }
 
 /// Special tiles.
