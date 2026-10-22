@@ -6,20 +6,17 @@ module core.noise;
 
 import core.random : Random;
 
-struct SimplexNoise
-{
+struct SimplexNoise {
     private ubyte[512] perm;
 
-    this(uint seed) @nogc nothrow pure @safe
-    {
+    this(uint seed) @nogc nothrow pure @safe {
         reseed(seed);
     }
 
-    void reseed(uint seed) @nogc nothrow pure @safe
-    {
+    void reseed(uint seed) @nogc nothrow pure @safe {
         ubyte[256] p;
         foreach (i; 0 .. 256)
-            p[i] = cast(ubyte) i;
+            p[i] = cast(ubyte)i;
         auto rng = Random(seed);
         rng.shuffle(p[]);
         foreach (i; 0 .. 512)
@@ -30,15 +27,13 @@ struct SimplexNoise
         [1, 1], [-1, 1], [1, -1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]
     ];
 
-    private static int fastFloor(float x) @nogc nothrow pure @safe
-    {
-        immutable i = cast(int) x;
+    private static int fastFloor(float x) @nogc nothrow pure @safe {
+        immutable i = cast(int)x;
         return x < i ? i - 1 : i;
     }
 
     /// 2D simplex noise in approximately [-1, 1].
-    float noise(float x, float y) const @nogc nothrow pure @safe
-    {
+    float noise(float x, float y) const @nogc nothrow pure @safe {
         enum float F2 = 0.36602540378f; // 0.5 * (sqrt(3) - 1)
         enum float G2 = 0.21132486540f; // (3 - sqrt(3)) / 6
 
@@ -59,8 +54,7 @@ struct SimplexNoise
         immutable ii = i & 255;
         immutable jj = j & 255;
 
-        float corner(float cx, float cy, int gi)
-        {
+        float corner(float cx, float cy, int gi) {
             float t0 = 0.5f - cx * cx - cy * cy;
             if (t0 < 0)
                 return 0;
@@ -76,11 +70,9 @@ struct SimplexNoise
     }
 
     /// Multi-octave (fBm) noise normalized to approximately [-1, 1].
-    float fbm(float x, float y, int octaves, float lacunarity = 2.0f, float gain = 0.5f) const @nogc nothrow pure @safe
-    {
+    float fbm(float x, float y, int octaves, float lacunarity = 2.0f, float gain = 0.5f) const @nogc nothrow pure @safe {
         float sum = 0, amp = 1, freq = 1, norm = 0;
-        foreach (o; 0 .. octaves)
-        {
+        foreach (o; 0 .. octaves) {
             sum += amp * noise(x * freq, y * freq);
             norm += amp;
             amp *= gain;
@@ -90,21 +82,18 @@ struct SimplexNoise
     }
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     auto a = SimplexNoise(7);
     auto b = SimplexNoise(7);
     foreach (i; 0 .. 100)
         assert(a.noise(i * 0.37f, i * 0.91f) == b.noise(i * 0.37f, i * 0.91f));
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     auto n = SimplexNoise(42);
     float lo = 1e9f, hi = -1e9f;
     foreach (i; 0 .. 200)
-        foreach (j; 0 .. 200)
-        {
+        foreach (j; 0 .. 200) {
             immutable v = n.noise(i * 0.13f, j * 0.17f);
             if (v < lo)
                 lo = v;
@@ -116,12 +105,10 @@ struct SimplexNoise
     assert(n.noise(0, 0) == 0); // simplex noise is 0 at the origin lattice point
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Continuity: tiny step => tiny change.
     auto n = SimplexNoise(3);
-    foreach (i; 0 .. 100)
-    {
+    foreach (i; 0 .. 100) {
         immutable x = i * 0.31f, y = i * 0.17f;
         immutable d = n.noise(x, y) - n.noise(x + 0.001f, y);
         assert(d < 0.05f && d > -0.05f);
@@ -135,11 +122,9 @@ struct SimplexNoise
     assert(differs);
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     auto n = SimplexNoise(11);
-    foreach (i; 0 .. 100)
-    {
+    foreach (i; 0 .. 100) {
         immutable v = n.fbm(i * 0.21f, i * 0.33f, 4);
         assert(v >= -1.01f && v <= 1.01f);
     }

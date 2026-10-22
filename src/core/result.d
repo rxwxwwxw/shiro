@@ -4,8 +4,7 @@
 // Zero-allocation tagged union for expected operational failures (no exceptions).
 module core.result;
 
-enum EngineError : int
-{
+enum EngineError : int {
     None = 0,
     InvalidHexCoordinates,
     MapSeedExhausted,
@@ -14,62 +13,52 @@ enum EngineError : int
     InitializationFailed
 }
 
-struct Result(T, E = EngineError)
-{
-    private union
-    {
+struct Result(T, E = EngineError) {
+    private union {
         T _value;
         E _error;
     }
 
     private bool _isOk;
 
-    static Result ok(T val) @nogc nothrow
-    {
+    static Result ok(T val) @nogc nothrow {
         Result r;
         r._isOk = true;
         r._value = val;
         return r;
     }
 
-    static Result err(E e) @nogc nothrow
-    {
+    static Result err(E e) @nogc nothrow {
         Result r;
         r._isOk = false;
         r._error = e;
         return r;
     }
 
-    bool isOk() const @nogc nothrow pure @safe
-    {
+    bool isOk() const @nogc nothrow pure @safe {
         return _isOk;
     }
 
-    bool isErr() const @nogc nothrow pure @safe
-    {
+    bool isErr() const @nogc nothrow pure @safe {
         return !_isOk;
     }
 
-    inout(T) value() inout @nogc nothrow @trusted
-    {
+    inout(T) value() inout @nogc nothrow @trusted {
         assert(_isOk);
         return _value;
     }
 
-    inout(E) error() inout @nogc nothrow @trusted
-    {
+    inout(E) error() inout @nogc nothrow @trusted {
         assert(!_isOk);
         return _error;
     }
 
-    T valueOr(T fallback) const @nogc nothrow @trusted
-    {
+    T valueOr(T fallback) const @nogc nothrow @trusted {
         return _isOk ? _value : fallback;
     }
 }
 
-@nogc nothrow unittest
-{
+@nogc nothrow unittest {
     auto a = Result!int.ok(42);
     assert(a.isOk && !a.isErr);
     assert(a.value == 42);
@@ -81,16 +70,13 @@ struct Result(T, E = EngineError)
     assert(b.valueOr(7) == 7);
 }
 
-@nogc nothrow unittest
-{
-    enum Custom : ubyte
-    {
+@nogc nothrow unittest {
+    enum Custom : ubyte {
         A,
         B
     }
 
-    struct P
-    {
+    struct P {
         int x, y;
     }
 

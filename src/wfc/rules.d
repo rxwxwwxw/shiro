@@ -15,29 +15,25 @@ enum size_t numStates = 924;
 
 alias StateSet = BitSet!1024;
 
-struct TileState
-{
+struct TileState {
     ubyte tile;
     ubyte rotation;
     ubyte level;
 }
 
 /// Edge type and level of one side of a state.
-struct EdgeInfo
-{
+struct EdgeInfo {
     EdgeType type;
     ubyte level;
 }
 
 /// Two edges are compatible when type and level both match. (The JS `edgesCompatible` relaxes
 /// grass levels, but the solver's byEdge lookups match exactly; we mirror the solver.)
-bool edgesCompatible(EdgeType a, int levelA, EdgeType b, int levelB) @nogc nothrow pure @safe
-{
+bool edgesCompatible(EdgeType a, int levelA, EdgeType b, int levelB) @nogc nothrow pure @safe {
     return a == b && levelA == levelB;
 }
 
-struct AdjacencyRules
-{
+struct AdjacencyRules {
     TileState[numStates] states;
     EdgeInfo[6][numStates] stateEdges;
     /// stateIds[tile][rotation][level]; -1 if that combination is not a valid state.
@@ -48,8 +44,7 @@ struct AdjacencyRules
     @disable this(this);
 
     /// Builds all tables. Call once at startup.
-    static void build(out AdjacencyRules r) @nogc nothrow
-    {
+    static void build(out AdjacencyRules r) @nogc nothrow {
         foreach (ref a; r.stateIds)
             foreach (ref b; a)
                 b[] = -1;
@@ -59,23 +54,19 @@ struct AdjacencyRules
                     s.reset();
 
         size_t n = 0;
-        foreach (tile; 0 .. numTiles)
-        {
+        foreach (tile; 0 .. numTiles) {
             immutable def = &tileList[tile];
             immutable maxBase = def.isSlope ? levelsCount - 1 - def.levelIncrement : levelsCount - 1;
-            foreach (rot; 0 .. 6)
-            {
+            foreach (rot; 0 .. 6) {
                 immutable edges = rotateHexEdges(def.edges, rot);
-                foreach (level; 0 .. maxBase + 1)
-                {
+                foreach (level; 0 .. maxBase + 1) {
                     assert(n < numStates);
-                    r.states[n] = TileState(cast(ubyte) tile, cast(ubyte) rot, cast(ubyte) level);
-                    r.stateIds[tile][rot][level] = cast(short) n;
-                    foreach (d; 0 .. numHexDirs)
-                    {
-                        immutable lvl = getEdgeLevel(tile, rot, cast(HexDir) d, level);
+                    r.states[n] = TileState(cast(ubyte)tile, cast(ubyte)rot, cast(ubyte)level);
+                    r.stateIds[tile][rot][level] = cast(short)n;
+                    foreach (d; 0 .. numHexDirs) {
+                        immutable lvl = getEdgeLevel(tile, rot, cast(HexDir)d, level);
                         assert(lvl < levelsCount);
-                        r.stateEdges[n][d] = EdgeInfo(edges[d], cast(ubyte) lvl);
+                        r.stateEdges[n][d] = EdgeInfo(edges[d], cast(ubyte)lvl);
                         r.byEdge[edges[d]][d][lvl].set(n);
                     }
                     n++;
@@ -87,46 +78,38 @@ struct AdjacencyRules
 
     /// States of the neighbor that are compatible with edge (type, level) of the cell on side `dir`.
     /// `returnDir` is the neighbor's facing side, i.e. opposite(dir).
-    ref const(StateSet) matching(EdgeType type, HexDir returnDir, int level) return const @nogc nothrow pure @safe
-    {
+    ref const(StateSet) matching(EdgeType type, HexDir returnDir, int level) return const @nogc nothrow pure @safe {
         return byEdge[type][returnDir][level];
     }
 
     /// Union of neighbor states allowed across `dir` given a set of remaining states in a cell.
-    StateSet allowedAcross(const ref StateSet possibilities, HexDir dir) const @nogc nothrow pure @safe
-    {
+    StateSet allowedAcross(const ref StateSet possibilities, HexDir dir) const @nogc nothrow pure @safe {
         StateSet result;
         immutable ret = opposite(dir);
-        foreach (s; possibilities.bits)
-        {
+        foreach (s; possibilities.bits) {
             immutable e = stateEdges[s][dir];
             result.unite(byEdge[e.type][ret][e.level]);
         }
         return result;
     }
 
-    int stateId(int tile, int rotation, int level) const @nogc nothrow pure @safe
-    {
+    int stateId(int tile, int rotation, int level) const @nogc nothrow pure @safe {
         return stateIds[tile][rotation][level];
     }
 }
 
-version (unittest)
-{
-    private AdjacencyRules* makeRules()
-    {
+version (unittest) {
+    private AdjacencyRules* makeRules() {
         auto r = new AdjacencyRules;
         AdjacencyRules.build(*r);
         return r;
     }
 }
 
-unittest
-{
+unittest {
     auto r = makeRules();
     // Every state ID is dense, unique, and round-trips through stateIds.
-    foreach (i; 0 .. numStates)
-    {
+    foreach (i; 0 .. numStates) {
         immutable s = r.states[i];
         assert(r.stateId(s.tile, s.rotation, s.level) == i);
     }
@@ -139,13 +122,11 @@ unittest
     assert(valid == numStates);
 }
 
-unittest
-{
+unittest {
     // Counts per category: 690 + 144 + 90.
     auto r = makeRules();
     size_t flat, low, high;
-    foreach (ref s; r.states)
-    {
+    foreach (ref s; r.states) {
         immutable inc = tileList[s.tile].levelIncrement;
         if (inc == 0)
             flat++;
@@ -161,8 +142,7 @@ unittest
             assert(r.stateEdges[i][d].level < levelsCount);
 }
 
-unittest
-{
+unittest {
     // Every state appears in exactly 6 byEdge sets (one per side), matching its stateEdges.
     auto r = makeRules();
     size_t total = 0;
@@ -172,24 +152,20 @@ unittest
                 total += r.byEdge[t][d][l].count;
     assert(total == numStates * 6);
     foreach (i; 0 .. numStates)
-        foreach (d; 0 .. 6)
-        {
+        foreach (d; 0 .. 6) {
             immutable e = r.stateEdges[i][d];
             assert(r.byEdge[e.type][d][e.level].test(i));
         }
 }
 
-unittest
-{
+unittest {
     // Symmetry: if A allows B across dir, B allows A across opposite(dir).
     auto r = makeRules();
     foreach (a; 0 .. numStates)
-        foreach (d; 0 .. 6)
-        {
-            immutable dir = cast(HexDir) d;
+        foreach (d; 0 .. 6) {
+            immutable dir = cast(HexDir)d;
             immutable ea = r.stateEdges[a][dir];
-            foreach (b; r.matching(ea.type, opposite(dir), ea.level).bits)
-            {
+            foreach (b; r.matching(ea.type, opposite(dir), ea.level).bits) {
                 immutable eb = r.stateEdges[b][opposite(dir)];
                 assert(edgesCompatible(ea.type, ea.level, eb.type, eb.level));
                 assert(r.matching(eb.type, dir, eb.level).test(a));
@@ -197,21 +173,18 @@ unittest
         }
 }
 
-unittest
-{
+unittest {
     // Concrete cases: flat grass on level 2 only borders grass at level 2.
     auto r = makeRules();
     immutable g = r.stateId(0, 0, 2);
     assert(g >= 0);
     StateSet one;
     one.set(g);
-    foreach (d; 0 .. 6)
-    {
-        auto allowed = r.allowedAcross(one, cast(HexDir) d);
+    foreach (d; 0 .. 6) {
+        auto allowed = r.allowedAcross(one, cast(HexDir)d);
         assert(allowed.count > 0);
-        foreach (b; allowed.bits)
-        {
-            immutable e = r.stateEdges[b][opposite(cast(HexDir) d)];
+        foreach (b; allowed.bits) {
+            immutable e = r.stateEdges[b][opposite(cast(HexDir)d)];
             assert(e.type == EdgeType.grass && e.level == 2);
         }
     }

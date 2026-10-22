@@ -228,14 +228,20 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
   - Contradiction reporting (`failedCell`, `sourceKey`, `neighborConflict`).
 
 ### Phase 5: Multi-Grid Topology & Soft Boundary Unfixing
-* [ ] Create `src/wfc/grid_connector.d`:
+* [x] Create `src/wfc/grid_connector.d`:
   - Flat-top hex coordinates for 19-grid cluster.
   - Odd-q offset grid navigation with directions `[N, NE, SE, S, SW, NW]`.
   - Local-to-global and global-to-local grid coordinate conversions.
-* [ ] Integrate soft boundary unfixing in `src/wfc/solver.d`:
+* [x] Integrate soft boundary unfixing in `src/wfc/solver.d`:
   - Ingest boundary neighbor cells from adjacent pre-solved grids.
   - Upon neighbor boundary conflict, unfix conflicting neighbor cells, converting them into active solve cells while locking their outer anchors.
   - Re-run solve with flexible boundary.
+
+**Phase 5 notes (implemented):**
+* Grid centers come from an exact integer lattice (`gridCenter`/`gridOfCell`), so radius-R clusters tile with no seams for any R. `MapRect.withAspect(cells, 16, 9)` builds 16:9 rectangular maps; grids are clipped to the rectangle.
+* Unfixing is driven by a `TileLookup` delegate over the global `TileMap` instead of precomputed anchor lists; only `soft` fixed cells can be unfixed.
+* `src/wfc/tile_map.d` (2 bytes/cell) and a first sweep in `src/wfc/map_generator.d` were pulled forward so scale could be measured. Recovery for grids that still fail (Phase 6) is not in yet.
+* Scale (`benchmarks/bench_scale.d`, R=8, Apple Silicon, `-O3`): 2.0M cells (1756x1139) generate in ~84 s (~42 us/cell, linear) with ~7 MB peak RSS (4 MB map + 1.6 MB solver arena). About 12% of grids still fail before Phase 6 recovery. Time, not memory, is the limit; Phase 9 targets it.
 
 ### Phase 6: Layered Recovery System & Island Orchestration
 * [ ] Create `src/wfc/recovery.d`:

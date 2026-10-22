@@ -7,61 +7,53 @@ import core.random : Random;
 import wfc.rules : StateSet, numStates;
 
 /// Possibility space of one cell: a bitset of remaining state IDs plus its collapsed state.
-struct HexWFCCell
-{
+struct HexWFCCell {
     StateSet possibilities;
     bool collapsed;
     /// Collapsed state ID, or -1.
     short state = -1;
 
     /// Resets to the full possibility space of `n` states (IDs 0 .. n-1).
-    void reset(size_t n = numStates) @nogc nothrow pure @safe
-    {
+    void reset(size_t n = numStates) @nogc nothrow pure @safe {
         possibilities.setFirst(n);
         collapsed = false;
         state = -1;
     }
 
-    size_t count() const @nogc nothrow pure @safe
-    {
+    size_t count() const @nogc nothrow pure @safe {
         return possibilities.count;
     }
 
-    bool has(size_t stateId) const @nogc nothrow pure @safe
-    {
+    bool has(size_t stateId) const @nogc nothrow pure @safe {
         return possibilities.test(stateId);
     }
 
     /// Removes a state; returns true if it was present.
-    bool remove(size_t stateId) @nogc nothrow pure @safe
-    {
+    bool remove(size_t stateId) @nogc nothrow pure @safe {
         if (!possibilities.test(stateId))
             return false;
         possibilities.clear(stateId);
         return true;
     }
 
-    void collapse(size_t stateId) @nogc nothrow pure @safe
-    {
+    void collapse(size_t stateId) @nogc nothrow pure @safe {
         possibilities.reset();
         possibilities.set(stateId);
         collapsed = true;
-        state = cast(short) stateId;
+        state = cast(short)stateId;
     }
 
     /// Sort key for lowest-entropy search: fewer possibilities sort first, ties are broken by a
     /// random perturbation (integer counterpart of JS `log(count) + random() * 0.001`, which keeps
     /// the ordering identical on every platform). Collapsed cells return 0.
-    uint entropyKey(ref Random rng) const @nogc nothrow pure @safe
-    {
+    uint entropyKey(ref Random rng) const @nogc nothrow pure @safe {
         if (collapsed)
             return 0;
         return cast(uint)(count << 20) | (rng.next() >>> 12);
     }
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     HexWFCCell c;
     c.reset();
     assert(c.count == numStates && !c.collapsed && c.state == -1);
@@ -72,8 +64,7 @@ struct HexWFCCell
     assert(c.count == 10 && !c.has(10));
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     HexWFCCell c;
     c.reset();
     c.collapse(42);
@@ -82,8 +73,7 @@ struct HexWFCCell
     assert(c.entropyKey(rng) == 0);
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Fewer possibilities always sort first, regardless of the random tie-break.
     auto rng = Random(7);
     HexWFCCell a, b;

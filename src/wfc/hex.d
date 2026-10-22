@@ -6,8 +6,7 @@
 module wfc.hex;
 
 /// Pointy-top directions, in HexWFC order.
-enum HexDir : ubyte
-{
+enum HexDir : ubyte {
     NE,
     E,
     SE,
@@ -19,28 +18,23 @@ enum HexDir : ubyte
 enum size_t numHexDirs = 6;
 
 /// Direction pointing the opposite way.
-HexDir opposite(HexDir d) @nogc nothrow pure @safe
-{
+HexDir opposite(HexDir d) @nogc nothrow pure @safe {
     return cast(HexDir)((d + 3) % 6);
 }
 
 /// Rotate a direction clockwise by `steps` * 60 degrees.
-HexDir rotated(HexDir d, int steps) @nogc nothrow pure @safe
-{
+HexDir rotated(HexDir d, int steps) @nogc nothrow pure @safe {
     return cast(HexDir)(((d + steps) % 6 + 6) % 6);
 }
 
-struct OffsetCoord
-{
+struct OffsetCoord {
     int col, row;
 }
 
-struct CubeCoord
-{
+struct CubeCoord {
     int q, r, s;
 
-    this(int q, int r, int s) @nogc nothrow pure @safe
-    {
+    this(int q, int r, int s) @nogc nothrow pure @safe {
         assert(q + r + s == 0, "cube coordinates must satisfy q + r + s == 0");
         this.q = q;
         this.r = r;
@@ -48,28 +42,23 @@ struct CubeCoord
     }
 
     /// Axial constructor: s is derived.
-    static CubeCoord fromAxial(int q, int r) @nogc nothrow pure @safe
-    {
+    static CubeCoord fromAxial(int q, int r) @nogc nothrow pure @safe {
         return CubeCoord(q, r, -q - r);
     }
 
-    bool isValid() const @nogc nothrow pure @safe
-    {
+    bool isValid() const @nogc nothrow pure @safe {
         return q + r + s == 0;
     }
 
-    CubeCoord opBinary(string op : "+")(const CubeCoord o) const @nogc nothrow pure @safe
-    {
+    CubeCoord opBinary(string op : "+")(const CubeCoord o) const @nogc nothrow pure @safe {
         return CubeCoord(q + o.q, r + o.r, s + o.s);
     }
 
-    CubeCoord opBinary(string op : "-")(const CubeCoord o) const @nogc nothrow pure @safe
-    {
+    CubeCoord opBinary(string op : "-")(const CubeCoord o) const @nogc nothrow pure @safe {
         return CubeCoord(q - o.q, r - o.r, s - o.s);
     }
 
-    CubeCoord neighbor(HexDir d) const @nogc nothrow pure @safe
-    {
+    CubeCoord neighbor(HexDir d) const @nogc nothrow pure @safe {
         immutable v = cubeDirs[d];
         return CubeCoord(q + v.q, r + v.r, s + v.s);
     }
@@ -77,30 +66,26 @@ struct CubeCoord
 
 /// Neighbor vectors in HexDir order: NE, E, SE, SW, W, NW.
 immutable CubeCoord[6] cubeDirs = [
-    CubeCoord(1, -1, 0), CubeCoord(1, 0, -1), CubeCoord(0, 1, -1),
-    CubeCoord(-1, 1, 0), CubeCoord(-1, 0, 1), CubeCoord(0, -1, 1)
+    CubeCoord(1, -1, 0), CubeCoord(1, 0, -1), CubeCoord(0, 1, -1), CubeCoord(-1, 1, 0),
+    CubeCoord(-1, 0, 1), CubeCoord(0, -1, 1)
 ];
 
 /// Odd-r offset -> cube.
-CubeCoord offsetToCube(int col, int row) @nogc nothrow pure @safe
-{
+CubeCoord offsetToCube(int col, int row) @nogc nothrow pure @safe {
     immutable q = col - (row >> 1);
     return CubeCoord(q, row, -q - row);
 }
 
-CubeCoord toCube(const OffsetCoord o) @nogc nothrow pure @safe
-{
+CubeCoord toCube(const OffsetCoord o) @nogc nothrow pure @safe {
     return offsetToCube(o.col, o.row);
 }
 
 /// Cube -> odd-r offset.
-OffsetCoord cubeToOffset(const CubeCoord c) @nogc nothrow pure @safe
-{
+OffsetCoord cubeToOffset(const CubeCoord c) @nogc nothrow pure @safe {
     return OffsetCoord(c.q + (c.r >> 1), c.r);
 }
 
-int cubeDistance(const CubeCoord a, const CubeCoord b) @nogc nothrow pure @safe
-{
+int cubeDistance(const CubeCoord a, const CubeCoord b) @nogc nothrow pure @safe {
     immutable dq = a.q > b.q ? a.q - b.q : b.q - a.q;
     immutable dr = a.r > b.r ? a.r - b.r : b.r - a.r;
     immutable ds = a.s > b.s ? a.s - b.s : b.s - a.s;
@@ -108,21 +93,18 @@ int cubeDistance(const CubeCoord a, const CubeCoord b) @nogc nothrow pure @safe
 }
 
 /// Number of cells within `radius` of a center: 3r(r+1) + 1.
-size_t cellsInRadius(int radius) @nogc nothrow pure @safe
-{
+size_t cellsInRadius(int radius) @nogc nothrow pure @safe {
     assert(radius >= 0);
     return cast(size_t)(3 * radius * (radius + 1) + 1);
 }
 
 /// Writes all cells within `radius` of `center` into `buf` (q-major, r ascending, like the JS
 /// reference) and returns the count. `buf` must hold at least cellsInRadius(radius) entries.
-size_t cubeCoordsInRadius(const CubeCoord center, int radius, CubeCoord[] buf) @nogc nothrow pure @safe
-{
+size_t cubeCoordsInRadius(const CubeCoord center, int radius, CubeCoord[] buf) @nogc nothrow pure @safe {
     immutable n = cellsInRadius(radius);
     assert(buf.length >= n);
     size_t k = 0;
-    foreach (dq; -radius .. radius + 1)
-    {
+    foreach (dq; -radius .. radius + 1) {
         immutable rlo = -radius > -dq - radius ? -radius : -dq - radius;
         immutable rhi = radius < -dq + radius ? radius : -dq + radius;
         foreach (dr; rlo .. rhi + 1)
@@ -133,25 +115,20 @@ size_t cubeCoordsInRadius(const CubeCoord center, int radius, CubeCoord[] buf) @
 }
 
 /// Direction from `a` to adjacent `b`; returns false if not adjacent.
-bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc nothrow pure @safe
-{
-    foreach (i; 0 .. numHexDirs)
-    {
-        if (a.neighbor(cast(HexDir) i) == b)
-        {
-            dir = cast(HexDir) i;
+bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc nothrow pure @safe {
+    foreach (i; 0 .. numHexDirs) {
+        if (a.neighbor(cast(HexDir)i) == b) {
+            dir = cast(HexDir)i;
             return true;
         }
     }
     return false;
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Offset <-> cube round trip, including negative rows/cols.
     foreach (row; -10 .. 11)
-        foreach (col; -10 .. 11)
-        {
+        foreach (col; -10 .. 11) {
             immutable c = offsetToCube(col, row);
             assert(c.isValid);
             immutable o = cubeToOffset(c);
@@ -163,13 +140,11 @@ bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc not
     assert(offsetToCube(0, -1) == CubeCoord(1, -1, 0));
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Directions: opposites cancel, rotation is cyclic, neighbors are at distance 1.
     immutable origin = CubeCoord(0, 0, 0);
-    foreach (i; 0 .. numHexDirs)
-    {
-        immutable d = cast(HexDir) i;
+    foreach (i; 0 .. numHexDirs) {
+        immutable d = cast(HexDir)i;
         assert(cubeDirs[d].isValid);
         immutable n = origin.neighbor(d);
         assert(cubeDistance(origin, n) == 1);
@@ -186,8 +161,7 @@ bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc not
     assert(!origin.directionTo(CubeCoord(2, -2, 0), dummy));
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Pointy-top geometry: NE and E neighbors in offset space on an even row.
     immutable c = offsetToCube(3, 2);
     assert(cubeToOffset(c.neighbor(HexDir.E)) == OffsetCoord(4, 2));
@@ -202,33 +176,27 @@ bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc not
     assert(cubeToOffset(d.neighbor(HexDir.SW)) == OffsetCoord(3, 4));
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Metric invariants.
     foreach (a; -3 .. 4)
-        foreach (b; -3 .. 4)
-        {
+        foreach (b; -3 .. 4) {
             immutable p = CubeCoord.fromAxial(a, b);
             immutable q = CubeCoord.fromAxial(b, a - b);
             assert(cubeDistance(p, p) == 0);
             assert(cubeDistance(p, q) == cubeDistance(q, p));
-            assert(cubeDistance(p, CubeCoord(0, 0, 0)) <= cubeDistance(p,
-                    q) + cubeDistance(q, CubeCoord(0, 0, 0)));
+            assert(cubeDistance(p, CubeCoord(0, 0, 0)) <= cubeDistance(p, q) + cubeDistance(q, CubeCoord(0, 0, 0)));
         }
     assert(cubeDistance(CubeCoord(0, 0, 0), CubeCoord(3, -5, 2)) == 5);
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // Radius queries: counts, uniqueness, distance bound, ring structure.
     CubeCoord[217] buf; // radius 8, the WFC grid size
-    foreach (radius; 0 .. 9)
-    {
+    foreach (radius; 0 .. 9) {
         immutable center = offsetToCube(-2, 3);
         immutable n = cubeCoordsInRadius(center, radius, buf[]);
         assert(n == cellsInRadius(radius));
-        foreach (i; 0 .. n)
-        {
+        foreach (i; 0 .. n) {
             assert(buf[i].isValid);
             assert(cubeDistance(center, buf[i]) <= radius);
             foreach (j; 0 .. i)
@@ -238,8 +206,7 @@ bool directionTo(const CubeCoord a, const CubeCoord b, out HexDir dir) @nogc not
     assert(cellsInRadius(8) == 217 && cellsInRadius(2) == 19 && cellsInRadius(1) == 7);
     // Every neighbor of the center is included for radius 1.
     immutable n1 = cubeCoordsInRadius(CubeCoord(0, 0, 0), 1, buf[]);
-    foreach (i; 0 .. numHexDirs)
-    {
+    foreach (i; 0 .. numHexDirs) {
         bool found = false;
         foreach (j; 0 .. n1)
             if (buf[j] == cubeDirs[i])

@@ -8,8 +8,7 @@ public import wfc.hex : HexDir, numHexDirs;
 /// Number of elevation levels.
 enum int levelsCount = 5;
 
-enum EdgeType : ubyte
-{
+enum EdgeType : ubyte {
     grass,
     water,
     road,
@@ -20,8 +19,7 @@ enum EdgeType : ubyte
 enum size_t numEdgeTypes = 5;
 
 /// One tile definition. `edges` are in HexDir order (NE, E, SE, SW, W, NW) at rotation 0.
-struct TileDef
-{
+struct TileDef {
     string name;
     EdgeType[6] edges;
     ushort weight;
@@ -31,8 +29,7 @@ struct TileDef
     ubyte levelIncrement;
     bool preventChaining;
 
-    bool isSlope() const @nogc nothrow pure @safe
-    {
+    bool isSlope() const @nogc nothrow pure @safe {
         return highEdgeMask != 0;
     }
 }
@@ -78,8 +75,7 @@ immutable TileDef[] tileList = [
             (1 << HexDir.NE) | (1 << HexDir.E) | (1 << HexDir.SE), 2, false),
     TileDef("ROAD_A_SLOPE_HIGH", [eG, eR, eG, eG, eR, eG], 12,
             (1 << HexDir.NE) | (1 << HexDir.E) | (1 << HexDir.SE), 2, false),
-    TileDef("GRASS_CLIFF", [eG, eG, eG, eG, eG, eG], 6,
-            (1 << HexDir.NE) | (1 << HexDir.E) | (1 << HexDir.SE), 2, false),
+    TileDef("GRASS_CLIFF", [eG, eG, eG, eG, eG, eG], 6, (1 << HexDir.NE) | (1 << HexDir.E) | (1 << HexDir.SE), 2, false),
     TileDef("GRASS_CLIFF_C", [eG, eG, eG, eG, eG, eG], 6, (1 << HexDir.E), 2, false),
     TileDef("GRASS_SLOPE_LOW", [eG, eG, eG, eG, eG, eG], 20,
             (1 << HexDir.NE) | (1 << HexDir.E) | (1 << HexDir.SE), 1, false),
@@ -93,17 +89,15 @@ immutable TileDef[] tileList = [
 enum size_t numTiles = tileList.length;
 
 /// Look up a tile ID by name; returns -1 if absent. (Cold path: tooling and tests.)
-int tileIdByName(string name) @nogc nothrow pure @safe
-{
+int tileIdByName(string name) @nogc nothrow pure @safe {
     foreach (i, ref t; tileList)
         if (t.name == name)
-            return cast(int) i;
+            return cast(int)i;
     return -1;
 }
 
 /// Rotate edges clockwise by `rotation` steps of 60 degrees (edge i moves to slot i + rotation).
-EdgeType[6] rotateHexEdges(const EdgeType[6] edges, int rotation) @nogc nothrow pure @safe
-{
+EdgeType[6] rotateHexEdges(const EdgeType[6] edges, int rotation) @nogc nothrow pure @safe {
     EdgeType[6] r;
     foreach (i; 0 .. 6)
         r[(i + rotation) % 6] = edges[i];
@@ -111,8 +105,7 @@ EdgeType[6] rotateHexEdges(const EdgeType[6] edges, int rotation) @nogc nothrow 
 }
 
 /// Rotate a HexDir bitmask by `rotation` steps.
-ubyte rotateDirMask(ubyte mask, int rotation) @nogc nothrow pure @safe
-{
+ubyte rotateDirMask(ubyte mask, int rotation) @nogc nothrow pure @safe {
     ubyte r = 0;
     foreach (i; 0 .. 6)
         if (mask & (1 << i))
@@ -121,8 +114,7 @@ ubyte rotateDirMask(ubyte mask, int rotation) @nogc nothrow pure @safe
 }
 
 /// Edge level for `dir` of a tile placed at `rotation` with `baseLevel`: high edges are raised.
-int getEdgeLevel(size_t tile, int rotation, HexDir dir, int baseLevel) @nogc nothrow pure @safe
-{
+int getEdgeLevel(size_t tile, int rotation, HexDir dir, int baseLevel) @nogc nothrow pure @safe {
     immutable def = &tileList[tile];
     if (!def.isSlope)
         return baseLevel;
@@ -130,21 +122,18 @@ int getEdgeLevel(size_t tile, int rotation, HexDir dir, int baseLevel) @nogc not
     return (mask & (1 << dir)) ? baseLevel + def.levelIncrement : baseLevel;
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     static assert(numTiles == 34);
     assert(tileIdByName("GRASS") == 0 && tileIdByName("WATER") == 1);
     assert(tileIdByName("NOPE") == -1);
-    foreach (ref t; tileList)
-    {
+    foreach (ref t; tileList) {
         assert(t.weight > 0);
         assert(t.isSlope == (t.levelIncrement != 0));
         assert(t.levelIncrement <= 2);
     }
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     EdgeType[6] edges = [eG, eR, eG, eW, eV, eC];
     assert(rotateHexEdges(edges, 0) == edges);
     assert(rotateHexEdges(edges, 6) == edges);
@@ -157,16 +146,14 @@ int getEdgeLevel(size_t tile, int rotation, HexDir dir, int baseLevel) @nogc not
     assert(rotateHexEdges(ra, 3) == ra);
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     assert(rotateDirMask(0b000111, 0) == 0b000111);
     assert(rotateDirMask(0b000111, 1) == 0b001110);
     assert(rotateDirMask(0b100001, 1) == 0b000011); // wraps NW -> NE
     assert(rotateDirMask(0b000111, 6) == 0b000111);
 }
 
-@nogc nothrow pure @safe unittest
-{
+@nogc nothrow pure @safe unittest {
     // GRASS_SLOPE_LOW: high edges NE, E, SE at rotation 0, rise 1.
     immutable t = tileIdByName("GRASS_SLOPE_LOW");
     assert(getEdgeLevel(t, 0, HexDir.NE, 2) == 3);
