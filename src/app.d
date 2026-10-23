@@ -745,8 +745,12 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 return 0;
         }
         SDL_RenderPresent(ren.handle);
-        v.mesh.adapt(drawMs * cfg.slow, cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0)
-                * cfg.slow);
+        // With the GPU path the rasterizing happens off the CPU and present mostly waits on vsync or
+        // the compositor, so whole-frame time says nothing about load; only a CPU renderer pays for
+        // pixels at present.
+        immutable frameMs = v.renderer.gpu.ready ? drawMs
+            : cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
+        v.mesh.adapt(drawMs * cfg.slow, frameMs * cfg.slow);
 
         immutable now = SDL_GetPerformanceCounter();
         immutable dt = (now - last) / freq;
