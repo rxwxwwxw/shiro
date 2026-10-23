@@ -409,8 +409,9 @@ private void generationPanel(nk_context* ctx, ref ViewerState st, ref CommandQue
     checkbox(ctx, "Roads, sources & sinks", p.routes.enabled);
     if (p.routes.enabled) {
         nk_layout_row_dynamic(ctx, 24, 2);
-        nk_property_int(ctx, "Sources:", 1, &p.routes.place.sources, maxSources, 1, 0.1f);
-        nk_property_int(ctx, "Sinks:", 1, &p.routes.place.sinks, maxSinks, 1, 0.1f);
+        // 0 = picked from the map size.
+        nk_property_int(ctx, "Sources (0 auto):", 0, &p.routes.place.sources, maxSources, 1, 0.1f);
+        nk_property_int(ctx, "Sinks (0 auto):", 0, &p.routes.place.sinks, maxSinks, 1, 0.1f);
         nk_property_int(ctx, "Loops:", 0, &p.routes.loops, 8, 1, 0.1f);
         nk_property_int(ctx, "Waypoints:", 0, &p.routes.waypoints, 4, 1, 0.1f);
         nk_property_int(ctx, "Bendiness:", 0, &p.routes.bendiness, 1000, 10, 2);
@@ -419,6 +420,7 @@ private void generationPanel(nk_context* ctx, ref ViewerState st, ref CommandQue
         nk_property_int(ctx, "Edge margin:", 1, &p.routes.place.edgeMargin, 20, 1, 0.1f);
         nk_layout_row_dynamic(ctx, 22, 1);
         checkbox(ctx, "Terrain walls (cliff, river, coast)", p.routes.flankTerrain);
+        checkbox(ctx, "Sources left, sinks right", p.routes.place.sides);
         checkbox(ctx, "Reveal the map in stages (rect)", p.reveal.enabled);
         if (p.reveal.enabled) {
             nk_layout_row_dynamic(ctx, 24, 2);

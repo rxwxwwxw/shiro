@@ -53,7 +53,7 @@ immutable string usage = "usage: shiro_viewer [options]
   --radius N             WFC grid radius in cells (default 8)
   --rings N              island rings of grids (default 2 = 19 grids)
   --seed N               random seed (default 1)
-  --sources N --sinks N  creep sources and sinks, 1..16 each (default 2 and 1)
+  --sources N --sinks N  creep sources and sinks, 1..16 each (default 0 = from the map size)
   --no-roads             plain terrain without sources, sinks and roads
   --stages N             uncover the map in N stages, 2..8 (default 4; rect layout)
   --no-reveal            play the whole map from the first wave
@@ -200,12 +200,12 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.hasScreenshot = val.length > 0;
             break;
         case "--sources":
-            if (!num() || n < 1 || n > maxSources)
+            if (!num() || n > maxSources)
                 return R.err(CliError.badNumber);
             cfg.params.routes.place.sources = n;
             break;
         case "--sinks":
-            if (!num() || n < 1 || n > maxSinks)
+            if (!num() || n > maxSinks)
                 return R.err(CliError.badNumber);
             cfg.params.routes.place.sinks = n;
             break;
@@ -287,7 +287,7 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     auto r = parseArgs(a[]);
     assert(r.isOk && r.value.params.routes.place.sources == 5 && r.value.params.routes.place.sinks == 3);
     assert(!r.value.params.routes.enabled);
-    immutable string[2] bad = ["--sinks", "0"];
+    immutable string[2] bad = ["--sinks", "-1"];
     assert(parseArgs(bad[]).error == CliError.badNumber);
     immutable string[2] big = ["--sources", "17"];
     assert(parseArgs(big[]).error == CliError.badNumber);

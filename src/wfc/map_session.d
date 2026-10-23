@@ -39,9 +39,11 @@ enum int minGridRadius = 1;
 enum int maxGridRadius = 16;
 enum int maxIslandRings = 4;
 /// Whole-map retries (with derived seeds) when a generated map fails route validation.
-enum int maxRouteAttempts = 4;
+enum int maxRouteAttempts = 8;
 /// Reveal maps: endpoint + road plans tried per attempt before one passes the stage checks.
 enum int maxRevealPlans = 24;
+/// Cells this close to a planned road take the road plan's tiles rather than the terrain's.
+enum int roadBand = 3;
 
 struct GenParams {
     Layout layout = Layout.rect;
@@ -77,6 +79,7 @@ struct MapSession {
     private TerrainField terrainField;
     private TerrainMasks terrainMasks;
     private StateSet maskScratch;
+    private ubyte* roadDist;
     GenStats stats;
     /// Route validation of the last map (all zero when routes are disabled).
     RouteReport routeReport;
@@ -117,6 +120,7 @@ struct MapSession {
         if (s is null)
             return;
         auto r = s.rulesBuf;
+        free(s.roadDist);
         object.destroy!false(*s);
         free(r);
         free(s);
@@ -192,18 +196,44 @@ struct MapSession {
     }
 
     /// Roads climb on their own slopes, so the cells around them are left to the road plan.
-    private bool nearNetwork(const CubeCoord c) const @nogc nothrow @safe {
-        if (!network_.allocated)
-            return false;
-        if (network_.onNetwork(c))
-            return true;
-        foreach (d; 0 .. numHexDirs) {
-            immutable n1 = c.neighbor(cast(HexDir)d);
-            if (network_.onNetwork(n1) || network_.onNetwork(n1.neighbor(cast(HexDir)d))
-                    || network_.onNetwork(n1.neighbor(cast(HexDir)((d + 1) % 6))))
-                return true;
+    private bool nearNetwork(const CubeCoord c) const @nogc nothrow @trusted {
+        return roadDist !is null && network_.rect.contains(c) && roadDist[network_.rect.index(c)] <= roadBand;
+    }
+
+    /// Steps from every cell to the planned network (capped at 255).
+    private void buildRoadDist() @nogc nothrow @trusted {
+        import core.stdc.stdlib : realloc;
+
+        immutable rect = network_.rect, n = rect.cellCount;
+        roadDist = cast(ubyte*)realloc(roadDist, n);
+        auto queue = cast(uint*)malloc(n * uint.sizeof);
+        assert(roadDist && queue, "road distance allocation failed");
+        scope (exit)
+            free(queue);
+        size_t head = 0, tail = 0;
+        foreach (i; 0 .. n) {
+            roadDist[i] = 255;
+            if (network_.onNetwork(rect.cellAt(i))) {
+                roadDist[i] = 0;
+                queue[tail++] = cast(uint)i;
+            }
         }
-        return false;
+        while (head < tail) {
+            immutable i = queue[head++];
+            if (roadDist[i] >= roadBand)
+                continue;
+            immutable c = rect.cellAt(i);
+            foreach (d; 0 .. numHexDirs) {
+                immutable nc = c.neighbor(cast(HexDir)d);
+                if (!rect.contains(nc))
+                    continue;
+                immutable j = rect.index(nc);
+                if (roadDist[j] != 255)
+                    continue;
+                roadDist[j] = cast(ubyte)(roadDist[i] + 1);
+                queue[tail++] = cast(uint)j;
+            }
+        }
     }
 
     private const(StateSet)* roadMaskFor(const CubeCoord c) @nogc nothrow @trusted {
@@ -347,6 +377,7 @@ struct MapSession {
                 if (!planned)
                     continue;
                 network_ = move(net);
+                buildRoadDist();
                 revealPlan = plan;
                 cons.mask = &maskFor;
                 cons.protect = &protectFor;

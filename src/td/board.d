@@ -392,7 +392,10 @@ struct Board {
     Board a, b;
     a.load(*s, 9);
     b.load(*s, 9);
-    assert(a.numSources == p.routes.place.sources && a.numSinks == p.routes.place.sinks);
+    import wfc.placement : resolveCounts;
+
+    immutable want = resolveCounts(p.routes.place, MapRect(p.cols, p.rows));
+    assert(a.numSources == want.sources && a.numSinks == want.sinks);
     assert(a.goldVeins >= 2 && a.leyStones >= 2);
     size_t veins = 0;
     foreach (i; 0 .. a.rect.cellCount) {

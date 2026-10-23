@@ -107,8 +107,12 @@ struct BoundaryField {
 }
 
 struct PlacementParams {
-    int sources = 2;
-    int sinks = 1;
+    /// Endpoint counts; 0 picks them from the map size (see `autoCounts`).
+    int sources = 0;
+    int sinks = 0;
+    /// Sources in the left third of the map and sinks in the right third, so creeps cross it
+    /// from left to right.
+    bool sides = true;
     /// Endpoints keep at least this many cells of land between them and the map edge.
     int edgeMargin = 3;
     /// Hard minimum hex distances; 0 picks a value from the map size (relaxed if needed).
@@ -260,21 +264,73 @@ private int requiredSpacing(const Spacing s, EndpointKind a, EndpointKind b) @no
     return a == EndpointKind.source ? s.sourceSource : s.sinkSink;
 }
 
-private bool validCell(ref const BoundaryField field, const CubeCoord c, int margin) @nogc nothrow @safe {
-    return field.get(c) > margin;
+/// Where an endpoint may go: anywhere, the left third or the right third of the map.
+private enum Zone : ubyte {
+    any,
+    left,
+    right
+}
+
+private Zone zoneOf(const PlacementParams p, EndpointKind k) @nogc nothrow pure @safe {
+    return !p.sides ? Zone.any : (k == EndpointKind.source ? Zone.left : Zone.right);
+}
+
+private bool validCell(ref const BoundaryField field, const CubeCoord c, int margin, Zone z = Zone.any) @nogc nothrow @safe {
+    if (field.get(c) <= margin)
+        return false;
+    immutable col = cubeToOffset(c).col;
+    final switch (z) {
+    case Zone.any:
+        return true;
+    case Zone.left:
+        return col < field.rect.cols / 3;
+    case Zone.right:
+        return col >= field.rect.cols - field.rect.cols / 3;
+    }
+}
+
+/// Endpoint counts for a map: one source lane per ~14 rows, one sink per two lanes, so most of
+/// the map lies near a road.
+void autoCounts(const MapRect rect, out int sources, out int sinks) @nogc nothrow pure @safe {
+    sources = (rect.rows + 7) / 14;
+    sources = sources < 1 ? 1 : (sources > 8 ? 8 : sources);
+    sinks = (sources + 1) / 2;
+}
+
+@nogc nothrow pure @safe unittest {
+    int so, si;
+    autoCounts(MapRect(96, 54), so, si);
+    assert(so == 4 && si == 2);
+    autoCounts(MapRect(30, 10), so, si);
+    assert(so == 1 && si == 1);
+    autoCounts(MapRect(400, 400), so, si);
+    assert(so == 8 && si == 4);
+}
+
+/// `p` with automatic counts filled in for `rect`.
+PlacementParams resolveCounts(const PlacementParams p, const MapRect rect) @nogc nothrow pure @safe {
+    PlacementParams r = p;
+    int so, si;
+    autoCounts(rect, so, si);
+    if (r.sources == 0)
+        r.sources = so;
+    if (r.sinks == 0)
+        r.sinks = si;
+    return r;
 }
 
 /// Random valid cell (rejection sampling, then a scan).
-private bool randomValidCell(ref const BoundaryField field, int margin, ref Random rng, out CubeCoord c) @nogc nothrow @safe {
+private bool randomValidCell(ref const BoundaryField field, int margin, ref Random rng, out CubeCoord c,
+        Zone z = Zone.any) @nogc nothrow @safe {
     immutable rect = field.rect;
     foreach (_; 0 .. 4096) {
         c = offsetToCube(cast(int)rng.below(rect.cols), cast(int)rng.below(rect.rows));
-        if (validCell(field, c, margin))
+        if (validCell(field, c, margin, z))
             return true;
     }
     foreach (i; 0 .. rect.cellCount) {
         c = rect.cellAt(i);
-        if (validCell(field, c, margin))
+        if (validCell(field, c, margin, z))
             return true;
     }
     return false;
@@ -343,11 +399,12 @@ private void relax(ref const BoundaryField field, const PlacementParams p, const
                 fy = fy * cap / fl;
             }
             immutable next = Vec(pos[i].x + fx, pos[i].y + fy);
-            if (validCell(field, toCell(next), p.edgeMargin))
+            immutable z = zoneOf(p, kinds[i]);
+            if (validCell(field, toCell(next), p.edgeMargin, z))
                 pos[i] = next;
-            else if (validCell(field, toCell(Vec(next.x, pos[i].y)), p.edgeMargin))
+            else if (validCell(field, toCell(Vec(next.x, pos[i].y)), p.edgeMargin, z))
                 pos[i].x = next.x; // slide along the wall
-            else if (validCell(field, toCell(Vec(pos[i].x, next.y)), p.edgeMargin))
+            else if (validCell(field, toCell(Vec(pos[i].x, next.y)), p.edgeMargin, z))
                 pos[i].y = next.y;
         }
     }
@@ -366,8 +423,9 @@ private bool spacingOk(const CubeCoord c, EndpointKind kind, const CubeCoord[] c
 
 /// Places `p.sources` sources and `p.sinks` sinks on valid land. Fails with PlacementFailed if
 /// the hard spacings cannot be met even after relaxing the automatic ones.
-Result!Endpoints placeEndpoints(ref const BoundaryField field, const PlacementParams p, ref Random rng) @nogc nothrow @trusted {
+Result!Endpoints placeEndpoints(ref const BoundaryField field, const PlacementParams params, ref Random rng) @nogc nothrow @trusted {
     alias R = Result!Endpoints;
+    immutable p = resolveCounts(params, field.rect);
     if (p.sources < 1 || p.sinks < 1 || p.sources > maxSources || p.sinks > maxSinks || p.edgeMargin < 0)
         return R.err(EngineError.InvalidHexCoordinates);
     immutable area = field.countBeyond(p.edgeMargin);
@@ -382,7 +440,7 @@ Result!Endpoints placeEndpoints(ref const BoundaryField field, const PlacementPa
     Vec[maxSources + maxSinks] pos;
     foreach (i; 0 .. n) {
         CubeCoord c;
-        if (!randomValidCell(field, p.edgeMargin, rng, c))
+        if (!randomValidCell(field, p.edgeMargin, rng, c, zoneOf(p, kinds[i])))
             return R.err(EngineError.PlacementFailed);
         pos[i] = toWorld(c);
     }
@@ -400,8 +458,8 @@ Result!Endpoints placeEndpoints(ref const BoundaryField field, const PlacementPa
 
         bool ok = true;
         foreach (i; 0 .. n) {
-            if (validCell(field, cells[i], p.edgeMargin) && spacingOk(cells[i], kinds[i],
-                    cells[0 .. i], kinds[0 .. i], size_t.max, sp))
+            if (validCell(field, cells[i], p.edgeMargin, zoneOf(p, kinds[i])) && spacingOk(cells[i],
+                    kinds[i], cells[0 .. i], kinds[0 .. i], size_t.max, sp))
                 continue;
             // Best of K random candidates: satisfies spacing, maximizes the closest distance.
             bool found = false;
@@ -409,7 +467,7 @@ Result!Endpoints placeEndpoints(ref const BoundaryField field, const PlacementPa
             int bestScore = -1;
             foreach (_; 0 .. 256) {
                 CubeCoord c;
-                if (!randomValidCell(field, p.edgeMargin, rng, c))
+                if (!randomValidCell(field, p.edgeMargin, rng, c, zoneOf(p, kinds[i])))
                     break;
                 if (!spacingOk(c, kinds[i], cells[0 .. i], kinds[0 .. i], size_t.max, sp))
                     continue;
@@ -523,9 +581,24 @@ version (unittest) {
     auto rng = Random(1);
     assert(placeEndpoints(f, p, rng).error == EngineError.PlacementFailed);
     p = PlacementParams.init;
-    p.sources = 0;
+    p.sources = -1;
     assert(placeEndpoints(f, p, rng).error == EngineError.InvalidHexCoordinates);
     p = PlacementParams.init;
     p.edgeMargin = 20;
     assert(placeEndpoints(f, p, rng).error == EngineError.PlacementFailed);
+}
+
+@nogc nothrow unittest {
+    // By default the counts follow the map size, sources sit in the left third and sinks in the
+    // right third.
+    auto f = BoundaryField(MapRect(96, 54), null);
+    foreach (seed; 1 .. 6) {
+        auto rng = Random(seed);
+        auto e = placeEndpoints(f, PlacementParams.init, rng);
+        assert(e.isOk && e.value.numSources == 4 && e.value.numSinks == 2);
+        foreach (ref c; e.value.sourceCells)
+            assert(cubeToOffset(c).col < 32);
+        foreach (ref c; e.value.sinkCells)
+            assert(cubeToOffset(c).col >= 64);
+    }
 }

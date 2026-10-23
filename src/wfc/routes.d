@@ -45,8 +45,9 @@ struct RouteParams {
     int affinityRadius = 5;
     /// Extra cost for a new road cell next to an unrelated road.
     int parallelPenalty = 300;
-    /// Extra roads that connect a network to itself, giving creeps a choice of path.
-    int loops = 1;
+    /// Extra roads that connect a network to itself, giving creeps a choice of path (off by
+    /// default: every road leads from a source to a sink).
+    int loops = 0;
     /// A loop only rejoins at least this many road cells away from where it leaves.
     int minLoopLength = 14;
     /// Walkable cells within this distance of a road become walls (forest or rock).

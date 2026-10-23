@@ -129,10 +129,8 @@ Result!RevealPlan planReveal(const MapRect world, const RevealParams p, ref Rand
     RevealPlan plan;
     plan.world = world;
     plan.numStages = p.stages;
-    // Creeps come along the longer world axis (pointy-top: a column is sqrt(3), a row 1.5 wide).
-    immutable horizontal = world.cols * 1732 >= world.rows * 1500;
-    immutable flip = (rng.next() & 1) != 0;
-    plan.entrySide = horizontal ? (flip ? Side.west : Side.east) : (flip ? Side.north : Side.south);
+    // Creeps always come from the left, toward sinks on the right.
+    plan.entrySide = Side.west;
     // Centered across the axis with some jitter; flush with the back edge along it.
     int jitter(int slack) {
         return slack <= 0 ? 0 : slack / 2 + cast(int)rng.below(cast(uint)(slack / 2 + 1)) - slack / 4;
@@ -190,8 +188,8 @@ Result!RevealPlan planReveal(const MapRect world, const RevealParams p, ref Rand
         foreach (k; 1 .. plan.numStages)
             assert(plan.window(k - 1).within(plan.window(k)) && plan.window(k - 1) != plan.window(k));
         immutable w0 = plan.window(0);
-        // Horizontal world: creeps come from the west or east; the back edge is the world edge.
-        assert(plan.entrySide == Side.west || plan.entrySide == Side.east);
+        // Creeps come from the west; the back (east) edge is the world edge.
+        assert(plan.entrySide == Side.west);
         assert(plan.entrySide == Side.east ? w0.col0 == 0 : w0.col0 + w0.cols == world.cols);
         // The entry edge itself is 0 from the front, the back edge is depth - 1.
         immutable front = plan.entrySide == Side.east ? w0.col0 + w0.cols - 1 : w0.col0;
@@ -200,10 +198,10 @@ Result!RevealPlan planReveal(const MapRect world, const RevealParams p, ref Rand
         assert(plan.fromFront(w0, offsetToCube(back, w0.row0)) == plan.depth(w0) - 1);
         assert(plan.stageOf(offsetToCube(w0.col0, w0.row0)) == 0);
     }
-    // Tall worlds reveal along the rows; bad stage counts are rejected.
+    // Tall worlds still reveal from the west; bad stage counts are rejected.
     auto rng = Random(3);
     auto tall = planReveal(MapRect(20, 80), RevealParams.init, rng);
-    assert(tall.isOk && (tall.value.entrySide == Side.north || tall.value.entrySide == Side.south));
+    assert(tall.isOk && tall.value.entrySide == Side.west);
     RevealParams bad;
     bad.stages = 1;
     assert(planReveal(MapRect(40, 40), bad, rng).error == EngineError.InvalidHexCoordinates);
@@ -251,8 +249,9 @@ private int bandOf(int i, int count, int numStages) @nogc nothrow pure @safe {
 /// keep `minDefensePath` from every source and half that from the edges they will be revealed
 /// across, and are farther from source 0 than sink 0 is.
 Result!Endpoints placeStagedEndpoints(ref const BoundaryField field, ref const RevealPlan plan,
-        const PlacementParams p, int minDefensePath, ref Random rng) @nogc nothrow @trusted {
+        const PlacementParams params, int minDefensePath, ref Random rng) @nogc nothrow @trusted {
     alias R = Result!Endpoints;
+    immutable p = resolveCounts(params, plan.world);
     if (!plan.enabled || plan.numStages < 2 || p.sources < 1 || p.sinks < 1 || p.sources > maxSources
             || p.sinks > maxSinks || p.edgeMargin < 0)
         return R.err(EngineError.InvalidHexCoordinates);
@@ -338,6 +337,9 @@ Result!Endpoints placeStagedEndpoints(ref const BoundaryField field, ref const R
 
         scope bool delegate(const CubeCoord) @nogc nothrow ok = (const CubeCoord c) @nogc nothrow{
             if (inner.contains(c) || edgeDist(c) < minDefensePath / 2)
+                return false;
+            // Sinks stay on the right.
+            if (p.sides && cubeToOffset(c).col < plan.world.cols - plan.world.cols / 3)
                 return false;
             if (cubeDistance(c, e.sources[0]) <= s0Dist)
                 return false;

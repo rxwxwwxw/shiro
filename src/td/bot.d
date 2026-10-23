@@ -1,5 +1,5 @@
 // A scripted player that stands in for the human Controller (AGENTS.md §1.2): it builds a mix of
-// towers on the cells that cover the most road, upgrades them, and puts mines on gold veins. Used
+// towers on the cells that cover the most road, spread over every source's lane, upgrades them, and puts mines on gold veins. Used
 // by the headless integration test and the viewer's --bot flag. It only issues GameCommands, so
 // its games replay like any other. Headless Model.
 module td.bot;
@@ -14,9 +14,14 @@ struct Bot {
     private struct Spot {
         int col, row;
         int score;
+        /// Sources whose walk to a sink passes within reach.
+        ushort lanes;
     }
 
     private Spot* spots;
+    // Per cell: the sources whose walk passes through it.
+    private ushort* laneAt;
+    private int numLanes;
     private int numSpots;
     private int[numTowerKinds] built;
     private int decisions;
@@ -28,6 +33,7 @@ struct Bot {
 
     ~this() @nogc nothrow @trusted {
         free(spots);
+        free(laneAt);
     }
 
     enum int maxSpots = 512;
@@ -51,7 +57,10 @@ struct Bot {
         // Traffic: how many sources' walks to a sink pass each cell (steepest descent, first
         // candidate), so towers go where every creep passes, not on a branch one source uses.
         auto traffic = cast(ubyte*)calloc(b.rect.cellCount, 1);
-        assert(traffic !is null);
+        free(laneAt);
+        laneAt = cast(ushort*)calloc(b.rect.cellCount, ushort.sizeof);
+        assert(traffic !is null && laneAt !is null);
+        numLanes = b.numSources;
         scope (exit)
             free(traffic);
         foreach (k; 0 .. b.numSources) {
@@ -60,6 +69,7 @@ struct Bot {
                 immutable i = b.rect.index(c);
                 if (traffic[i] < 255)
                     traffic[i]++;
+                laneAt[i] |= cast(ushort)(1 << k);
                 immutable d = b.distAt(i);
                 if (d == 0)
                     break;
@@ -76,12 +86,12 @@ struct Bot {
                     break;
             }
         }
-        enum int reach = 2;
         CubeCoord[19] near = void;
         foreach (i; 0 .. b.rect.cellCount) {
             if (!(b.flagsAt(i) & CellFlag.buildable))
                 continue;
             immutable c = b.rect.cellAt(i);
+            immutable lanes = lanesNear(*b, c);
             immutable n = cubeCoordsInRadius(c, reach, near[]);
             int score = 0;
             foreach (k; 0 .. n)
@@ -103,7 +113,7 @@ struct Bot {
                 j--;
             }
             immutable o = cubeToOffset(c);
-            spots[j] = Spot(o.col, o.row, score);
+            spots[j] = Spot(o.col, o.row, score, lanes);
         }
     }
 
@@ -137,16 +147,51 @@ struct Bot {
         immutable kind = order[towers % order.length];
         if (g.gold < towerStats(kind, Stage.lv1).cost)
             return;
-        foreach (k; 0 .. numSpots) {
-            const s = &spots[k];
-            if (g.canPlace(kind, s.col, s.row) != CommandError.none)
-                continue;
-            if (g.apply(GameCommand(CommandType.place, kind, 0, s.col, s.row)) == CommandError.none) {
-                built[kind]++;
-                return;
+        // The least defended lane first, then anywhere.
+        immutable lane = weakestLane(g);
+        foreach (pass; 0 .. 2)
+            foreach (k; 0 .. numSpots) {
+                const s = &spots[k];
+                if (pass == 0 && !(s.lanes & (1 << lane)))
+                    continue;
+                if (g.canPlace(kind, s.col, s.row) != CommandError.none)
+                    continue;
+                if (g.apply(GameCommand(CommandType.place, kind, 0, s.col, s.row)) == CommandError.none) {
+                    built[kind]++;
+                    return;
+                }
             }
-        }
         upgrade(g);
+    }
+
+    private enum int reach = 2;
+
+    /// Sources whose walk passes within reach of `c`.
+    private ushort lanesNear(ref const Board b, const CubeCoord c) const @nogc nothrow @trusted {
+        CubeCoord[19] near = void;
+        immutable n = cubeCoordsInRadius(c, reach, near[]);
+        ushort m = 0;
+        foreach (k; 0 .. n)
+            if (b.rect.contains(near[k]))
+                m |= laneAt[b.rect.index(near[k])];
+        return m;
+    }
+
+    /// The source lane with the fewest towers covering it.
+    private int weakestLane(ref const Game g) const @nogc nothrow @trusted {
+        int[16] cover;
+        foreach (ref t; g.towers) {
+            if (!t.alive || t.kind == TowerKind.mine)
+                continue;
+            immutable m = lanesNear(g.board, g.board.rect.cellAt(t.cell));
+            foreach (l; 0 .. numLanes)
+                cover[l] += (m >> l) & 1;
+        }
+        int best = 0;
+        foreach (l; 1 .. numLanes)
+            if (cover[l] < cover[best])
+                best = l;
+        return best;
     }
 
     /// Upgrades the affordable tower furthest behind; true if it did.
