@@ -14,6 +14,8 @@ import gfx.iso : IsoPoint, levelStep, rowPitch, squash;
 import gfx.sprites : spriteAnchor, spriteCell, spriteCols, spriteFacing, spriteFrames, spriteIndex, spriteSpan;
 import td.defs;
 import td.game;
+import wfc.hex : CubeCoord, cubeToOffset, HexDir;
+import wfc.passability : unreachable;
 
 /// World units (td.defs) to iso units.
 enum float isoPerX = 1.0f / halfHex;
@@ -245,6 +247,8 @@ struct TdOverlay {
                     SDL_FColor(0.8f, 0.15f, 0.0f, 0), 16);
         }
 
+        drawEndpoints(g, cam, mesh, t);
+
         // Range rings: the selected tower, and the tower about to be built.
         if (const sel = g.towerAt(inp.selCol, inp.selRow))
             if (sel.kind != TowerKind.mine)
@@ -288,6 +292,106 @@ struct TdOverlay {
             if (p.alive)
                 drawProjectile(cam, mesh, p, alpha);
         flush(r);
+    }
+
+    /// Where creeps come from and where they go: a red portal at each source with chevrons
+    /// marching down the first steps of its route, and a blue beacon over each sink. Brighter
+    /// between waves, while the player is still building.
+    private void drawEndpoints(ref const Game g, ref const Camera cam, ref const MapMesh mesh, float t) @nogc nothrow @trusted {
+        const b = &g.board();
+        immutable idle = g.status == GameStatus.waiting;
+        immutable boost = idle ? 1.0f : 0.6f;
+        immutable cellRx = halfHex * isoPerX * zoom, cellRy = halfHex * isoPerY * squash * zoom;
+
+        foreach (k; 0 .. b.numSinks) {
+            immutable o = cubeToOffset(b.sinks[k]);
+            int wx, wy;
+            cellWorld(o.col, o.row, wx, wy);
+            immutable p = worldToScreen(cam, mesh, wx, wy, 0);
+            immutable pulse = 0.5f + 0.5f * sinf(t * 3);
+            disc(p.x, p.y, cellRx * 1.1f, cellRy * 1.1f, SDL_FColor(0.05f, 0.2f, 0.55f, 0.6f * boost),
+                    SDL_FColor(0.2f, 0.5f, 1, 0), 24);
+            ring(p.x, p.y, cellRx * (0.9f + 0.15f * pulse), cellRy * (0.9f + 0.15f * pulse), 3,
+                    SDL_FColor(0.55f, 0.85f, 1, 0.9f * boost));
+            ring(p.x, p.y, cellRx * 0.6f, cellRy * 0.6f, 2, SDL_FColor(1, 0.9f, 0.5f, 0.8f * boost));
+            // Light pillar so the sink reads from across the map.
+            immutable top = p.y - 3.0f * zoom;
+            line(p.x, p.y, p.x, top, 0.35f * zoom, SDL_FColor(0.6f, 0.9f, 1, 0.55f * boost),
+                    SDL_FColor(0.6f, 0.9f, 1, 0));
+            // Shield diamond hovering in it.
+            immutable hy = p.y - (1.9f + 0.12f * sinf(t * 2)) * zoom, hs = 0.28f * zoom;
+            if (reserve(4, 6)) {
+                immutable c = SDL_FColor(0.55f, 0.85f, 1, 0.95f), e = SDL_FColor(1, 0.95f, 0.6f, 0.95f);
+                immutable q0 = put(p.x, hy - hs, e), q1 = put(p.x + hs * 0.7f, hy, c);
+                immutable q2 = put(p.x, hy + hs, e), q3 = put(p.x - hs * 0.7f, hy, c);
+                tri(q0, q1, q2);
+                tri(q0, q2, q3);
+            }
+        }
+
+        foreach (k; 0 .. b.numSources) {
+            immutable o = cubeToOffset(b.sources[k]);
+            int wx, wy;
+            cellWorld(o.col, o.row, wx, wy);
+            immutable p = worldToScreen(cam, mesh, wx, wy, 0);
+            // Swirling portal on the ground.
+            disc(p.x, p.y, cellRx * 1.05f, cellRy * 1.05f, SDL_FColor(0.25f, 0.0f, 0.05f,
+                    0.55f * boost), SDL_FColor(1, 0.2f, 0.15f, 0.25f * boost), 24);
+            foreach (r; 0 .. 3) {
+                immutable f = ((t * 0.7f + r / 3.0f) % 1.0f);
+                ring(p.x, p.y, cellRx * (1.0f - 0.7f * f), cellRy * (1.0f - 0.7f * f), 2.5f,
+                        SDL_FColor(1, 0.3f + 0.4f * f, 0.2f, (1 - f) * 0.9f * boost));
+            }
+            immutable top = p.y - 2.4f * zoom;
+            line(p.x, p.y, p.x, top, 0.3f * zoom, SDL_FColor(1, 0.3f, 0.2f, 0.5f * boost),
+                    SDL_FColor(1, 0.3f, 0.2f, 0));
+
+            // Chevrons down the distance field: the way the creeps will walk.
+            CubeCoord c = b.sources[k];
+            float px = p.x, py = p.y;
+            foreach (step; 0 .. 7) {
+                immutable i = b.rect.index(c);
+                immutable d = b.distAt(i);
+                if (d == 0 || d == unreachable)
+                    break;
+                bool found;
+                CubeCoord next;
+                foreach (dir; 0 .. 6) {
+                    immutable n = c.neighbor(cast(HexDir)dir);
+                    immutable no = cubeToOffset(n);
+                    if (!b.inside(no.col, no.row))
+                        continue;
+                    if (b.distAt(b.rect.index(n)) < d) {
+                        next = n;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    break;
+                immutable no = cubeToOffset(next);
+                cellWorld(no.col, no.row, wx, wy);
+                immutable q = worldToScreen(cam, mesh, wx, wy, 0.05f);
+                immutable dx = q.x - px, dy = q.y - py;
+                immutable len = sqrtf(dx * dx + dy * dy);
+                if (len > 1) {
+                    immutable ux = dx / len, uy = dy / len;
+                    // Two chevrons per step, sliding forward; they fade out along the route.
+                    foreach (h; 0 .. 2) {
+                        immutable f = (h * 0.5f + t * 0.8f) % 1.0f;
+                        immutable cx = px + dx * f, cy = py + dy * f;
+                        immutable a = (1 - step / 7.0f) * boost * (0.4f + 0.6f * sinf(f * 3.14159f));
+                        immutable sz = 0.34f * zoom;
+                        immutable col = SDL_FColor(1, 0.35f, 0.25f, a);
+                        line(cx - ux * sz - uy * sz, cy - uy * sz + ux * sz, cx, cy, 0.13f * zoom, col, col);
+                        line(cx - ux * sz + uy * sz, cy - uy * sz - ux * sz, cx, cy, 0.13f * zoom, col, col);
+                    }
+                }
+                px = q.x;
+                py = q.y;
+                c = next;
+            }
+        }
     }
 
     private void drawCreep(ref const Camera cam, ref const MapMesh mesh, ref const Creep c,
