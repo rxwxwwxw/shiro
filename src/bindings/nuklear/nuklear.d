@@ -33,6 +33,7 @@ enum : nk_flags {
     NK_WINDOW_MOVABLE = 1 << 1,
     NK_WINDOW_SCALABLE = 1 << 2,
     NK_WINDOW_MINIMIZABLE = 1 << 4,
+    NK_WINDOW_NO_SCROLLBAR = 1 << 5,
     NK_WINDOW_TITLE = 1 << 6,
 }
 
@@ -44,7 +45,9 @@ enum : nk_flags {
     NK_TEXT_CENTERED = NK_TEXT_ALIGN_MIDDLE | NK_TEXT_ALIGN_CENTERED,
 }
 
-nk_context* shiro_nk_init(SDL_Window* win, SDL_Renderer* renderer, float scale);
+nk_context* shiro_nk_init(SDL_Window* win, SDL_Renderer* renderer, float scale, const(char)* textFont);
+void shiro_nk_use_font(nk_context* ctx, int which);
+void shiro_nk_dialogue_style(nk_context* ctx, int push);
 void shiro_nk_handle_event(nk_context* ctx, SDL_Renderer* renderer, SDL_Event* evt);
 void shiro_nk_render(nk_context* ctx);
 void shiro_nk_shutdown(nk_context* ctx);
@@ -67,3 +70,7 @@ void nk_tree_pop(nk_context* ctx);
 void nk_widget_disable_begin(nk_context* ctx);
 void nk_widget_disable_end(nk_context* ctx);
 void nk_label_colored(nk_context* ctx, const(char)* text, nk_flags align_, nk_color color);
+void nk_text_wrap(nk_context* ctx, const(char)* text, int len);
+void nk_text_colored(nk_context* ctx, const(char)* text, int len, nk_flags align_, nk_color color);
+bool nk_button_text(nk_context* ctx, const(char)* title, int len);
+void nk_spacing(nk_context* ctx, int cols);

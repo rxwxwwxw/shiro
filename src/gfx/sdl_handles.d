@@ -162,6 +162,21 @@ struct Texture {
         return EngineError.None;
     }
 
+    /// Like `openImage`, without reporting a missing file (optional art such as portraits).
+    EngineError tryOpenImage(SDL_Renderer* r, const(char)* path) @nogc nothrow @trusted {
+        auto surf = SDL_LoadSurface(path);
+        if (surf is null)
+            return EngineError.ResourceNotFound;
+        scope (exit)
+            SDL_DestroySurface(surf);
+        handle = SDL_CreateTextureFromSurface(r, surf);
+        if (handle is null)
+            return EngineError.InitializationFailed;
+        SDL_SetTextureScaleMode(handle, SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(handle, SDL_BLENDMODE_BLEND);
+        return EngineError.None;
+    }
+
     /// A plain RGBA image (sprite atlas), linearly filtered and alpha blended.
     EngineError openImage(ref Renderer r, const(char)* path) @nogc nothrow @trusted {
         auto surf = SDL_LoadSurface(path);

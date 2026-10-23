@@ -15,7 +15,8 @@ enum CliError : int {
     missingValue,
     badNumber,
     badLayout,
-    pathTooLong
+    pathTooLong,
+    badScene
 }
 
 struct ViewerConfig {
@@ -43,6 +44,14 @@ struct ViewerConfig {
     bool bot;
     /// Simulation ticks to run before the first frame (with --screenshot: a mid-game picture).
     int ticks;
+    /// Start in the village hub (the story); false: straight into tower defense as before.
+    bool village = true;
+    /// Story file (NUL-terminated); empty: assets/story/village.json.
+    char[1024] story = 0;
+    bool hasStory;
+    /// Open a conversation with this villager (a speaker id) at start, for screenshots.
+    char[32] talk = 0;
+    bool hasTalk;
 }
 
 immutable string usage = "usage: shiro_viewer [options]
@@ -68,6 +77,9 @@ immutable string usage = "usage: shiro_viewer [options]
   --flat                 flat-shaded shapes instead of the Hex-Map-WFC models
   --bot                  let the scripted bot build and upgrade towers
   --ticks N              advance the game N ticks (30 per second) before the first frame
+  --scene village|td     start in the village hub (default) or straight in tower defense
+  --story PATH           story file for the village (default assets/story/village.json)
+  --talk ID              open a conversation with villager ID at start (e.g. elder)
 ";
 
 private bool parseInt(const(char)[] s, out int v) @nogc nothrow pure @safe {
@@ -243,6 +255,28 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.selCol = col;
             cfg.selRow = row;
             break;
+        case "--scene":
+            if (val == "village")
+                cfg.village = true;
+            else if (val == "td")
+                cfg.village = false;
+            else
+                return R.err(CliError.badScene);
+            break;
+        case "--story":
+            if (val.length + 1 > cfg.story.length)
+                return R.err(CliError.pathTooLong);
+            cfg.story[0 .. val.length] = val[];
+            cfg.story[val.length] = 0;
+            cfg.hasStory = val.length > 0;
+            break;
+        case "--talk":
+            if (val.length + 1 > cfg.talk.length)
+                return R.err(CliError.pathTooLong);
+            cfg.talk[0 .. val.length] = val[];
+            cfg.talk[val.length] = 0;
+            cfg.hasTalk = val.length > 0;
+            break;
         case "--assets":
             if (val.length + 1 > cfg.assets.length)
                 return R.err(CliError.pathTooLong);
@@ -254,6 +288,9 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             return R.err(CliError.unknownFlag);
         }
     }
+    // The frame-time benchmark measures tower defense maps.
+    if (cfg.bench > 0)
+        cfg.village = false;
     if (cells > 0) {
         immutable rect = MapRect.withAspect(cells, aw, ah);
         cfg.params.cols = rect.cols;
@@ -275,7 +312,7 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     ];
     auto r = parseArgs(a[]);
     assert(r.isOk);
-    immutable c = r.value;
+    const c = r.value;
     assert(c.params.layout == Layout.island && c.params.radius == 6 && c.params.rings == 1);
     assert(c.params.seed == 77 && c.width == 800 && c.hasScreenshot);
     assert(c.screenshot[0 .. 8] == "out.bmp\0");
@@ -333,4 +370,18 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     assert(!parseArgs(off[]).value.params.reveal.enabled);
     immutable string[2] bad = ["--stages", "9"];
     assert(parseArgs(bad[]).error == CliError.badNumber);
+}
+
+@nogc nothrow @safe unittest {
+    // The village is the default scene; --scene td boots straight into tower defense.
+    immutable string[0] none;
+    assert(parseArgs(none[]).value.village);
+    immutable string[6] a = ["--scene", "td", "--story", "my/story.json", "--talk", "elder"];
+    auto r = parseArgs(a[]);
+    assert(r.isOk && !r.value.village && r.value.hasStory && r.value.story[0 .. 14] == "my/story.json\0");
+    assert(r.value.hasTalk && r.value.talk[0 .. 6] == "elder\0");
+    immutable string[2] bad = ["--scene", "moon"];
+    assert(parseArgs(bad[]).error == CliError.badScene);
+    immutable string[2] bench = ["--bench", "10"];
+    assert(!parseArgs(bench[]).value.village);
 }

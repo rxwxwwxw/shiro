@@ -5,6 +5,7 @@
 module app;
 
 import bindings.sdl3.sdl;
+import core.file : FileBytes;
 import core.result : EngineError;
 import core.stdc.stdio : fprintf, printf, snprintf, stderr;
 import core.stdc.string : strlen;
@@ -19,12 +20,21 @@ import gfx.particles;
 import gfx.renderer;
 import gfx.sdl_handles;
 import gfx.td_overlay;
+import gfx.village_overlay;
+import gui.dialogue_ui;
 import gui.nuklear_ui;
+import story.dialogue;
+import story.state;
+import story.td_link;
 import td.bot;
 import td.defs : cellUnits, halfHex, rowUnits, Stage, ticksPerSecond, TowerKind;
 import td.game;
+import village.plan;
+import village.walk;
+import village.world;
 import viewer.cli;
 import viewer.commands;
+import wfc.hex : cubeToOffset;
 import wfc.map_session;
 
 /// Elevation-blended copies of the texture atlas (one per level) and their edge length in pixels.
@@ -34,6 +44,17 @@ private enum float paletteSaturation = 1.0f, paletteExposure = 0.9f;
 /// Pixels a press may travel and still count as a click; tallest cell top in levels, for picking.
 private enum float clickSlop = 4, maxCellHeight = 8;
 private enum string defaultAssets = "third-party/Hex-Map-WFC/public/assets";
+private enum string defaultStory = "assets/story/village.json";
+private enum string dialogueFont = "assets/fonts/Roboto-Regular.ttf";
+/// Screen units per iso unit while walking around the village.
+private enum float villageZoom = 56;
+
+enum Scene : ubyte {
+    /// The hub: walk, talk, leave by the west gate.
+    village,
+    /// A tower defense run (the whole viewer, as before the village existed).
+    td
+}
 
 private struct Viewer {
     MapSession* session;
@@ -59,6 +80,28 @@ private struct Viewer {
     Particles fx;
     /// Real time not yet simulated, in seconds; the overlay interpolates by the leftover.
     double simAcc = 0;
+
+    Scene scene = Scene.td;
+    /// The village story: file, compiled dialogue, flags, and the hub's map and simulation.
+    FileBytes storyFile;
+    DialogueDb dialogueDb;
+    StoryState storyState;
+    VillagePlan plan;
+    WalkGrid walk;
+    VillageWorld world;
+    VillageQueue villageQueue;
+    VillageOverlay villageOverlay;
+    DialogueUi dialogue;
+    /// Village props (assets/models/village.glb) and walk sheets (assets/sprites/villagers.png), optional.
+    GlbModel villageGlb;
+    Texture villagerSprites;
+    /// Seed of this playthrough's village (the same village every time you come home).
+    uint villageSeed = 1;
+    /// What the story granted the current tower defense run.
+    RunModifiers runMods;
+    double villageAcc = 0;
+    /// Movement keys held: up, down, left, right.
+    bool[4] held;
     bool running = true;
     bool dragging;
     int screenshotCount;
@@ -159,7 +202,7 @@ private struct Viewer {
     void startGame() @nogc nothrow @trusted {
         simAcc = 0;
         if (state.params.routes.enabled && session.network.allocated) {
-            game.start(*session, state.params.seed);
+            game.start(*session, state.params.seed, state.story ? runMods : RunModifiers.init);
             bot.setup(game);
         } else
             game.stop();
@@ -244,6 +287,7 @@ private struct Viewer {
 
     void rebuildMesh(SDL_Renderer* sdl) @nogc nothrow @trusted {
         mesh.setTowerModel(towerGlb.loaded ? &towerGlb : null);
+        mesh.setVillageModel(villageGlb.loaded ? &villageGlb : null);
         if (!mesh.setup(*session, state.mesh, haveModel ? &glb : null, texture.variants))
             fprintf(stderr, "out of memory preparing the map mesh\n");
         mesh.setGame(&game);
@@ -333,6 +377,28 @@ private struct Viewer {
         }
         if (!towerGlb.loaded)
             fprintf(stderr, "td-towers.glb not found; towers reuse village buildings\n");
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(lo.ptr, lo.length, "assets/models/village.glb");
+            else if (base !is null)
+                snprintf(lo.ptr, lo.length, "%s../assets/models/village.glb", base);
+            else
+                break;
+            if (villageGlb.load(lo.ptr) == EngineError.None)
+                break;
+        }
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(lo.ptr, lo.length, "assets/sprites/villagers.png");
+            else if (base !is null)
+                snprintf(lo.ptr, lo.length, "%s../assets/sprites/villagers.png", base);
+            else
+                break;
+            if (villagerSprites.tryOpenImage(ren.handle, lo.ptr) == EngineError.None) {
+                villageOverlay.setSprites(villagerSprites.handle);
+                break;
+            }
+        }
         // The reference blends its moody atlas into the winter one by elevation.
         snprintf(lo.ptr, lo.length, "%.*s/textures/moody.png", cast(int)dirLen, path.ptr);
         snprintf(hi.ptr, hi.length, "%.*s/textures/winter.png", cast(int)dirLen, path.ptr);
@@ -345,8 +411,225 @@ private struct Viewer {
             printf("loaded %zu meshes from hex-terrain.glb (single texture)\n", glb.meshCount);
     }
 
+    // ---- the village -------------------------------------------------------------------------
+
+    /// Reads and compiles the story (the --story file, else assets/story/village.json next to the
+    /// working directory or the executable); false (with a message) when it cannot.
+    bool loadStory(ref const ViewerConfig cfg) @nogc nothrow @trusted {
+        char[2048] path = void;
+        const(char)* base = SDL_GetBasePath();
+        bool read;
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(path.ptr, path.length, "%s", cfg.hasStory ? cfg.story.ptr : defaultStory.ptr);
+            else if (!cfg.hasStory && base !is null)
+                snprintf(path.ptr, path.length, "%s../%s", base, defaultStory.ptr);
+            else
+                break;
+            if (storyFile.load(path.ptr) == EngineError.None) {
+                read = true;
+                break;
+            }
+        }
+        if (!read) {
+            fprintf(stderr, "story file not found (try --story PATH); starting in tower defense\n");
+            return false;
+        }
+        internLinkVars(storyState);
+        immutable err = dialogueDb.load(storyFile.text, storyState);
+        if (err != StoryError.none) {
+            fprintf(stderr, "story error %d at %.*s; starting in tower defense\n", err,
+                    cast(int)dialogueDb.errorContext.length, dialogueDb.errorContext.ptr);
+            return false;
+        }
+        return true;
+    }
+
+    /// Builds the village and puts the player at the gate: a new playthrough (`returning` false)
+    /// or the way home from a tower defense run that was `won` or not.
+    bool enterVillage(SDL_Renderer* sdl, bool returning, bool won) @nogc nothrow @trusted {
+        auto built = buildVillage(session, villageSeed, plan, walk);
+        if (built.isErr) {
+            fprintf(stderr, "village generation failed (error %d) for seed %u\n", built.error, villageSeed);
+            return false;
+        }
+        scene = Scene.village;
+        state.story = true;
+        state.showPanel = false;
+        state.buildKind = -1;
+        state.selCol = state.selRow = state.hoverCol = state.hoverRow = -1;
+        game.stop();
+        fx.reset(game);
+        rebuildMesh(sdl);
+        world.setup(&plan, &walk, &dialogueDb, &storyState, villageSeed);
+        if (world.loadNpcs(storyFile.text) < 0)
+            fprintf(stderr, "story: an NPC names an unknown speaker or home\n");
+        if (returning)
+            world.arriveFromTd(won);
+        else
+            world.begin();
+        villageAcc = 0;
+        held[] = false;
+        camera.zoom = villageZoom;
+        followPlayer(1);
+        printf("village seed %u: %d layout(s), %d villagers\n", villageSeed, built.value, cast(int)world.npcs.length);
+        return true;
+    }
+
+    /// Out of the west gate: a tower defense map with the run the story earned.
+    void enterTd(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        scene = Scene.td;
+        state.showPanel = true;
+        runMods = fromStory(storyState);
+        // A new road each run, the same one for the same playthrough and run count.
+        state.params.seed = (villageSeed * 977u + cast(uint)storyState.named(varRuns) * 131u + 1) & int.max;
+        regenerate(sdl);
+        printf("west road: +%d gold, creeps at %d%%, locked towers mask %d\n", runMods.bonusGold,
+                runMods.hpPct, runMods.lockedKinds);
+    }
+
+    /// Ends the run (a loss unless it was won) and walks home.
+    void returnFromTd(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        if (!state.story || scene != Scene.td)
+            return;
+        immutable won = game.active && game.status == GameStatus.won;
+        recordRun(storyState, won, game.active ? game.waveNo : 0);
+        enterVillage(sdl, true, won);
+    }
+
+    /// Eases the camera toward the player (`rate` 1 snaps).
+    void followPlayer(float rate) @nogc nothrow @trusted {
+        import gfx.td_overlay : isoPerX, isoPerY;
+
+        float level;
+        immutable o = cubeToOffset(worldCell(world.player.x, world.player.y));
+        mesh.cellLevel(o.col, o.row, level);
+        immutable tx = world.player.x * isoPerX, ty = world.player.y * isoPerY * squash - level * levelStep;
+        camera.cx += (tx - camera.cx) * rate;
+        camera.cy += (ty - camera.cy) * rate;
+        // Keep the map's edges at the screen's edges (centered when the map is the smaller one).
+        immutable hw = camera.width * 0.5f / camera.zoom, hh = camera.height * 0.5f / camera.zoom;
+        float clamp(float c, float lo, float hi) {
+            return hi - lo < 2 * hw ? (lo + hi) * 0.5f : (c < lo + hw ? lo + hw : (c > hi - hw ? hi - hw : c));
+        }
+
+        camera.cx = clamp(camera.cx, mesh.minX, mesh.maxX);
+        immutable lo = mesh.minY, hi = mesh.maxY;
+        camera.cy = hi - lo < 2 * hh ? (lo + hi) * 0.5f : (camera.cy < lo + hh ? lo + hh
+                : (camera.cy > hi - hh ? hi - hh : camera.cy));
+    }
+
+    /// Applies the frame's village input and runs the ticks `dt` seconds call for.
+    void stepVillage(double dt) @nogc nothrow @trusted {
+        world.clearEvents();
+        if (!world.talking) {
+            immutable dx = (held[3] ? 1 : 0) - (held[2] ? 1 : 0), dy = (held[1] ? 1 : 0) - (held[0] ? 1 : 0);
+            villageQueue.push(VillageCommand(VillageCmd.move, cast(byte)dx, cast(byte)dy));
+        }
+        VillageCommand c;
+        while (villageQueue.pop(c))
+            world.apply(c);
+        enum double tickLen = 1.0 / ticksPerSecond;
+        villageAcc += dt;
+        int steps = 0;
+        while (villageAcc >= tickLen) {
+            if (steps++ == 12) {
+                villageAcc = 0;
+                break;
+            }
+            world.step();
+            villageAcc -= tickLen;
+        }
+        foreach (e; world.events)
+            if (e.kind == VillageEventKind.leaveWest)
+                queue.push(CommandKind.regenerate);
+        foreach (i; 0 .. world.storyEvents.length) {
+            const n = dialogueDb.eventNames[world.storyEvents.ids[i]];
+            printf("story event: %.*s\n", cast(int)n.length, n.ptr);
+        }
+        immutable rate = dt * 6 > 1 ? 1.0f : cast(float)(dt * 6);
+        followPlayer(rate);
+    }
+
+    /// Village keys: walk, talk / continue, pick a choice, leave the conversation.
+    private void onVillageKey(ref const SDL_Event e, bool down) @nogc nothrow @trusted {
+        switch (e.key.key) {
+        case SDLK_W, SDLK_UP:
+            held[0] = down;
+            break;
+        case SDLK_S, SDLK_DOWN:
+            held[1] = down;
+            break;
+        case SDLK_A, SDLK_LEFT:
+            held[2] = down;
+            break;
+        case SDLK_D, SDLK_RIGHT:
+            held[3] = down;
+            break;
+        case SDLK_E, SDLK_SPACE, SDLK_RETURN:
+            if (!down || e.key.repeat)
+                break;
+            if (dialogue.typing(world))
+                dialogue.skipTyping(world);
+            else
+                villageQueue.push(VillageCommand(VillageCmd.interact));
+            break;
+        case SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6:
+            if (down && world.talking
+                    && !dialogue.typing(world))
+                villageQueue.push(VillageCommand(VillageCmd.choose, 0, 0, cast(ubyte)(e.key.key - SDLK_1)));
+            break;
+        case SDLK_ESCAPE:
+            if (!down)
+                break;
+            if (world.talking)
+                villageQueue.push(VillageCommand(VillageCmd.cancel));
+            else
+                queue.push(CommandKind.quit);
+            break;
+        case SDLK_EQUALS:
+            if (down)
+                camera.zoom = camera.zoom * 1.2f > 120 ? 120 : camera.zoom * 1.2f;
+            break;
+        case SDLK_MINUS:
+            if (down)
+                camera.zoom = camera.zoom / 1.2f < 12 ? 12 : camera.zoom / 1.2f;
+            break;
+        default:
+            break;
+        }
+    }
+
     /// Camera and hotkeys; `uiCapturing` means the panel owns the mouse / keyboard this frame.
     void onEvent(ref const SDL_Event e, bool uiCapturing) @nogc nothrow @trusted {
+        if (scene == Scene.village) {
+            switch (e.type) {
+            case SDL_EVENT_QUIT:
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                queue.push(CommandKind.quit);
+                break;
+            case SDL_EVENT_KEY_DOWN:
+                onVillageKey(e, true);
+                break;
+            case SDL_EVENT_KEY_UP:
+                onVillageKey(e, false);
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                held[] = false;
+                break;
+            case SDL_EVENT_MOUSE_WHEEL:
+                if (!uiCapturing) {
+                    import core.stdc.math : expf;
+
+                    immutable z = camera.zoom * expf(e.wheel.y * 0.15f);
+                    camera.zoom = z < 12 ? 12 : (z > 120 ? 120 : z);
+                }
+                break;
+            default:
+                break;
+            }
+            return;
+        }
         switch (e.type) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -424,6 +707,10 @@ private struct Viewer {
                 break;
             case SDLK_SPACE:
                 gameQueue.push(GameCommand(CommandType.startWave));
+                break;
+            case SDLK_RETURN:
+                if (state.story && (game.status == GameStatus.lost || game.status == GameStatus.won))
+                    queue.push(CommandKind.returnToVillage);
                 break;
             case SDLK_P:
                 state.speed = state.speed == 0 ? 1 : 0;
@@ -611,8 +898,21 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     immutable scale = SDL_GetWindowDisplayScale(window.handle) > 0 ? SDL_GetWindowDisplayScale(window.handle) : 1.0f;
     SDL_SetRenderScale(ren.handle, scale, scale);
     NuklearContext ui;
-    if (ui.open(window.handle, ren.handle, scale) != EngineError.None)
-        return 1;
+    {
+        // The dialogue font, next to the working directory or the executable (optional).
+        char[2048] font = void;
+        snprintf(font.ptr, font.length, "%s", dialogueFont.ptr);
+        import core.stdc.stdio : fclose, fopen;
+
+        auto probe = fopen(font.ptr, "rb");
+        const(char)* base = SDL_GetBasePath();
+        if (probe is null && base !is null)
+            snprintf(font.ptr, font.length, "%s../%s", base, dialogueFont.ptr);
+        if (probe !is null)
+            fclose(probe);
+        if (ui.open(window.handle, ren.handle, scale, font.ptr) != EngineError.None)
+            return 1;
+    }
 
     Viewer v;
     if (ren.gpu) {
@@ -642,13 +942,27 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     }
 
     updateViewport();
-    v.regenerate(ren.handle);
+    if (cfg.village && v.loadStory(cfg)) {
+        v.villageSeed = cfg.params.seed;
+        if (!v.enterVillage(ren.handle, false, false))
+            return 1;
+        if (cfg.hasTalk) {
+            import core.stdc.string : strlen;
+
+            if (!v.world.talkNow(cfg.talk[0 .. strlen(cfg.talk.ptr)]))
+                fprintf(stderr, "--talk: nobody called %s answers\n", cfg.talk.ptr);
+            v.followPlayer(1);
+        }
+    } else
+        v.regenerate(ren.handle);
     if (v.session.tiles.rect.cols == 0)
         return 1; // the initial parameters were rejected
     if (!v.fx.open(ren.handle))
         fprintf(stderr, "particle effects unavailable\n");
     v.fx.reset(v.game);
-    foreach (t; 0 .. cfg.ticks) {
+    foreach (t; 0 .. v.scene == Scene.village ? cfg.ticks : 0)
+        v.world.step();
+    foreach (t; 0 .. v.scene == Scene.td ? cfg.ticks : 0) {
         v.stepOnce();
         // Keep effects in step so a --screenshot after --ticks shows them mid-flight.
         v.fx.ambient(v.game, 1.0f / ticksPerSecond, 0);
@@ -689,8 +1003,8 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         immutable capturing = ui.capturing();
         // Idle frames cost nothing: sleep until an event arrives (a screenshot run never waits).
         // While the game runs, frames come as fast as vsync allows.
-        bool got = cfg.hasScreenshot || v.gameRunning ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e,
-                animating ? 120 : 500);
+        bool got = cfg.hasScreenshot || v.gameRunning || v.scene == Scene.village
+            ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e, animating ? 120 : 500);
         immutable woke = got || firstFrame || animating;
         firstFrame = false;
         if (!woke)
@@ -701,15 +1015,28 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             got = SDL_PollEvent(&e);
         }
         immutable wasPanel = v.state.showPanel;
-        v.updatePicking(capturing);
+        if (v.scene == Scene.td)
+            v.updatePicking(capturing);
         drawPanel(ui, v.state, v.queue, v.gameQueue, v.game, *v.session, v.mesh, v.haveModel, viewH);
+        if (v.scene == Scene.village) {
+            if (cfg.hasScreenshot)
+                v.dialogue.skipTyping(v.world);
+            v.dialogue.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
+        }
 
         bool screenshot = cfg.hasScreenshot;
         CommandKind cmd;
         while (v.queue.pop(cmd)) {
             final switch (cmd) {
             case CommandKind.regenerate:
-                v.regenerate(ren.handle);
+                // In the village this is the west gate: out to a tower defense run.
+                if (v.scene == Scene.village)
+                    v.enterTd(ren.handle);
+                else
+                    v.regenerate(ren.handle);
+                break;
+            case CommandKind.returnToVillage:
+                v.returnFromTd(ren.handle);
                 break;
             case CommandKind.rebuildMesh:
                 v.rebuildMesh(ren.handle);
@@ -733,6 +1060,10 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             double sdt = (now - simLast) / freq;
             simLast = now;
             sdt = sdt > 0.25 ? 0.25 : sdt;
+            if (v.scene == Scene.village) {
+                v.stepVillage(cfg.hasScreenshot ? 0 : sdt);
+                v.dialogue.update(v.world, cast(float)sdt);
+            }
             v.applyCommands();
             v.stepGame(cfg.hasScreenshot ? 0 : sdt);
             v.state.errorTimer -= cast(float)sdt;
@@ -750,8 +1081,12 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         immutable wave = v.state.animateWater ? cast(float)(drawStart / freq * 2.2) : float.nan;
         v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
         immutable drawMs = cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
-        v.drawMarkers(ren.handle);
-        {
+        if (v.scene == Scene.village)
+            v.villageOverlay.draw(ren.handle, v.world, v.dialogueDb, v.camera, v.mesh,
+                    cast(float)(v.villageAcc * ticksPerSecond), cast(float)(drawStart / freq));
+        else
+            v.drawMarkers(ren.handle);
+        if (v.scene == Scene.td) {
             OverlayInput inp;
             inp.selCol = v.state.selCol;
             inp.selRow = v.state.selRow;
@@ -770,6 +1105,8 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         if (v.state.grain && v.mesh.quality > 0.5f && v.grain.handle !is null)
             drawGrain(ren.handle, v.grain.handle, v.camera, drawStart);
         animating = (v.state.animateWater && v.renderer.sparkleVisible) || v.gameRunning || v.fx.busy;
+        if (v.scene == Scene.village)
+            v.dialogue.drawScene(ren.handle, v.world, v.dialogueDb, viewW, viewH);
         ui.render();
         if (screenshot) {
             char[1100] path = void;

@@ -173,7 +173,20 @@ enum CommandError : ubyte {
     wrongPhase,
     full,
     /// The cell is still in the fog.
-    hidden
+    hidden,
+    /// The story has not unlocked this tower kind yet.
+    locked
+}
+
+/// Adjustments a run starts with, decided outside the simulation (the village story). The
+/// defaults change nothing.
+struct RunModifiers {
+    /// Added to the starting gold (may be negative).
+    int bonusGold;
+    /// Bit per TowerKind that may not be built.
+    ubyte lockedKinds;
+    /// Creep hit points in percent of normal.
+    int hpPct = 100;
 }
 
 struct Game {
@@ -191,6 +204,7 @@ struct Game {
     private Wave wave_;
     private int waveSpawned, waveTick;
     private uint tick_, seed_, serials;
+    private RunModifiers mods_;
     int gold, lives;
     /// Waves started so far.
     int waveNo;
@@ -235,8 +249,9 @@ struct Game {
         numEvents_ = numTowers_ = 0;
     }
 
-    /// New game on a generated map.
-    void start(ref const MapSession s, uint seed) @nogc nothrow @trusted {
+    /// New game on a generated map, adjusted by `mods`.
+    void start(ref const MapSession s, uint seed, RunModifiers mods = RunModifiers.init) @nogc nothrow @trusted {
+        mods_ = mods;
         board_.load(s, seed);
         begin(seed);
         if (board_.plan.enabled) {
@@ -267,7 +282,9 @@ struct Game {
         numEvents_ = numTowers_ = creepHint = projHint = 0;
         waveSpawned = waveTick = 0;
         wave_.count = 0;
-        gold = startGold;
+        gold = startGold + mods_.bonusGold;
+        if (gold < 0)
+            gold = 0;
         lives = startLives;
         waveNo = 0;
         waveLimit = totalWaves;
@@ -286,6 +303,15 @@ struct Game {
 
     ref const(Board) board() const return @nogc nothrow pure @safe {
         return board_;
+    }
+
+    ref const(RunModifiers) modifiers() const return @nogc nothrow pure @safe {
+        return mods_;
+    }
+
+    /// Test hook: modifiers for the next `begin` (`start` takes them as an argument).
+    void setModifiersForTest(RunModifiers m) @nogc nothrow pure @safe {
+        mods_ = m;
     }
 
     /// Test hook: the board to fill before `begin`.
@@ -355,6 +381,8 @@ struct Game {
             return CommandError.occupied;
         if ((board_.specialAt(i) == SpecialKind.goldVein) != (kind == TowerKind.mine))
             return CommandError.wrongTile;
+        if (mods_.lockedKinds & (1 << kind))
+            return CommandError.locked;
         if (gold < towerStats(kind, Stage.lv1).cost)
             return CommandError.noGold;
         return CommandError.none;
@@ -598,7 +626,8 @@ struct Game {
             c.kind = kind;
             c.alive = true;
             c.serial = ++serials;
-            c.hp = c.maxHp = scaledHp(kind, waveNo > 0 ? waveNo : 1);
+            immutable hp = cast(long)scaledHp(kind, waveNo > 0 ? waveNo : 1) * mods_.hpPct / 100;
+            c.hp = c.maxHp = hp < 1 ? 1 : cast(int)hp;
             c.armor = cast(ubyte)creepTable[kind].armor;
             c.cell = cell;
             c.next = chooseNext(cell, c.serial);
@@ -1123,6 +1152,31 @@ version (unittest) {
     assert(g.apply(placeCmd(TowerKind.frost, 6, 2)) == CommandError.none && g.towers.length == 2);
     g.gold = 0;
     assert(g.apply(placeCmd(TowerKind.arrow, 7, 2)) == CommandError.noGold);
+}
+
+@nogc nothrow unittest {
+    // Run modifiers: bonus gold, locked kinds and tougher creeps.
+    Game g;
+    straightBoard(g);
+    g.setModifiersForTest(RunModifiers(40, cast(ubyte)(1 << TowerKind.flame), 150));
+    g.begin(7);
+    assert(g.gold == startGold + 40 && g.modifiers.hpPct == 150);
+    assert(g.canPlace(TowerKind.flame, 5, 2) == CommandError.locked);
+    assert(g.apply(placeCmd(TowerKind.flame, 5, 2)) == CommandError.locked);
+    assert(g.apply(placeCmd(TowerKind.arrow, 5, 2)) == CommandError.none);
+    assert(g.apply(GameCommand(CommandType.startWave)) == CommandError.none);
+    foreach (_; 0 .. ticksPerSecond * 2)
+        g.advance();
+    bool any;
+    foreach (ref c; g.creeps)
+        if (c.alive) {
+            any = true;
+            assert(c.maxHp == scaledHp(c.kind, 1) * 150 / 100);
+        }
+    assert(any);
+    g.setModifiersForTest(RunModifiers(-10_000));
+    g.begin(7);
+    assert(g.gold == 0);
 }
 
 @nogc nothrow unittest {

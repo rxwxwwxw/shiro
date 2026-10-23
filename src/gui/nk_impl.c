@@ -68,17 +68,67 @@ static char *nk_sdl_dtoa(char *str, double d) {
     return str;
 }
 
-/* Creates the context, bakes the default font at `scale` and starts the first input frame. */
-struct nk_context *shiro_nk_init(SDL_Window *win, SDL_Renderer *renderer, float scale) {
+/* Baked fonts: 0 = the panel's default font, 1 = dialogue text, 2 = speaker names. */
+static struct nk_font *shiro_fonts[3];
+
+/* Creates the context, bakes the default font (and, when `text_font` names a TTF, the dialogue
+ * fonts with Latin, Vietnamese and punctuation ranges) at `scale`, and starts the first input
+ * frame. A missing TTF leaves the dialogue on the default font. */
+struct nk_context *shiro_nk_init(SDL_Window *win, SDL_Renderer *renderer, float scale, const char *text_font) {
+    static const nk_rune ranges[] = {0x0020, 0x00FF, 0x0100, 0x024F, 0x0300, 0x036F,
+                                     0x1EA0, 0x1EFF, 0x2010, 0x2027, 0x2030, 0x205E, 0};
     struct nk_context *ctx = nk_sdl_init(win, renderer, nk_sdl_allocator());
     struct nk_font_config config = nk_font_config(0);
     struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(ctx);
-    struct nk_font *font = nk_font_atlas_add_default(atlas, 13 * scale, &config);
+    shiro_fonts[0] = nk_font_atlas_add_default(atlas, 13 * scale, &config);
+    shiro_fonts[1] = shiro_fonts[2] = NULL;
+    if (text_font && SDL_GetPathInfo(text_font, NULL)) {
+        struct nk_font_config tc = nk_font_config(0);
+        tc.range = ranges;
+        tc.oversample_h = 2;
+        shiro_fonts[1] = nk_font_atlas_add_from_file(atlas, text_font, 18 * scale, &tc);
+        shiro_fonts[2] = nk_font_atlas_add_from_file(atlas, text_font, 22 * scale, &tc);
+    }
     nk_sdl_font_stash_end(ctx);
-    font->handle.height /= scale;
-    nk_style_set_font(ctx, &font->handle);
+    for (int i = 0; i < 3; i++)
+        if (shiro_fonts[i])
+            shiro_fonts[i]->handle.height /= scale;
+    nk_style_set_font(ctx, &shiro_fonts[0]->handle);
     nk_input_begin(ctx);
     return ctx;
+}
+
+/* Switches the font for the widgets that follow (falls back to the default font). */
+void shiro_nk_use_font(struct nk_context *ctx, int which) {
+    struct nk_font *f = which >= 0 && which < 3 && shiro_fonts[which] ? shiro_fonts[which] : shiro_fonts[0];
+    nk_style_set_font(ctx, &f->handle);
+}
+
+/* The dialogue box look: a borderless see-through window (the box art is drawn underneath) with
+ * lacquer-red choice buttons and warm text. `push` 1 applies it, 0 restores the panel look. */
+void shiro_nk_dialogue_style(struct nk_context *ctx, int push) {
+    struct nk_style *s = &ctx->style;
+    if (!push) {
+        nk_style_pop_style_item(ctx);
+        nk_style_pop_style_item(ctx);
+        nk_style_pop_style_item(ctx);
+        nk_style_pop_style_item(ctx);
+        for (int i = 0; i < 6; i++)
+            nk_style_pop_color(ctx);
+        nk_style_pop_vec2(ctx);
+        return;
+    }
+    nk_style_push_style_item(ctx, &s->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+    nk_style_push_style_item(ctx, &s->button.normal, nk_style_item_color(nk_rgba(112, 38, 30, 225)));
+    nk_style_push_style_item(ctx, &s->button.hover, nk_style_item_color(nk_rgba(150, 56, 40, 240)));
+    nk_style_push_style_item(ctx, &s->button.active, nk_style_item_color(nk_rgba(186, 120, 52, 255)));
+    nk_style_push_color(ctx, &s->window.border_color, nk_rgba(0, 0, 0, 0));
+    nk_style_push_color(ctx, &s->button.border_color, nk_rgba(214, 170, 92, 255));
+    nk_style_push_color(ctx, &s->button.text_normal, nk_rgba(255, 238, 205, 255));
+    nk_style_push_color(ctx, &s->button.text_hover, nk_rgba(255, 250, 230, 255));
+    nk_style_push_color(ctx, &s->button.text_active, nk_rgba(40, 20, 10, 255));
+    nk_style_push_color(ctx, &s->text.color, nk_rgba(250, 236, 210, 255));
+    nk_style_push_vec2(ctx, &s->window.padding, nk_vec2(10, 8));
 }
 
 /* Feeds one event to Nuklear (converting to render coordinates first). */

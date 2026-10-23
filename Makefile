@@ -90,7 +90,7 @@ CONFIG_VIEWER_BIN := $(CONFIG_BIN_DIR)/shiro_viewer$(EXE)
 VIEWER_BIN := $(BIN_DIR)/shiro_viewer$(EXE)
 TEST_BIN := $(CONFIG_BIN_DIR)/test_runner$(EXE)
 
-BENCH_NAMES := bench_propagation bench_wfc_solve bench_routes bench_td_tick bench_scale
+BENCH_NAMES := bench_propagation bench_wfc_solve bench_routes bench_td_tick bench_village_gen bench_scale
 BENCH_BINS := $(addprefix $(CONFIG_BENCH_DIR)/,$(addsuffix $(EXE),$(BENCH_NAMES)))
 
 # -----------------------------------------------------------------------------
@@ -155,13 +155,13 @@ endif
 
 # D Compiler Flags (LDC2)
 D_MODULES := -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app \
-             -i=core.bitset -i=core.noise -i=core.random -i=core.result
+             -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
 
 D_TEST_MODULES := -i=wfc -i=td -i=tests -i=viewer -i=gfx \
-                  -i=core.bitset -i=core.noise -i=core.random -i=core.result
+                  -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
 
-D_BENCH_MODULES := -i=wfc -i=td \
-                   -i=core.bitset -i=core.noise -i=core.random -i=core.result
+D_BENCH_MODULES := -i=wfc -i=td -i=village \
+                   -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
 
 D_COMMON_FLAGS := -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w
 
@@ -415,6 +415,8 @@ benchmarks: $(BENCH_BINS)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_wfc_solve$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_routes$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_td_tick$(EXE)
+	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_village_gen$(EXE)
+	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_village_gen$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_scale$(EXE) 8 $(SCALE_CELLS)
 
 $(CONFIG_BENCH_DIR)/%$(EXE): benchmarks/%.d $(D_SRCS) | $(CONFIG_BENCH_DIR) $(OBJ_DIR)
@@ -447,8 +449,8 @@ shaders:
 vgc:
 	@echo "==> Checking zero GC allocations in simulation hot paths (-vgc)..."
 	$(LDC) -c -o- -vgc $(D_COMMON_FLAGS) \
-		src/core/random.d src/core/bitset.d src/core/noise.d src/core/result.d \
-		src/wfc/*.d src/td/*.d
+		src/core/random.d src/core/bitset.d src/core/noise.d src/core/result.d src/core/json.d src/core/file.d \
+		src/wfc/*.d src/td/*.d src/story/*.d src/village/*.d
 	@echo "==> GC check passed: zero allocations detected."
 
 check-nophobos:

@@ -19,9 +19,13 @@ import tests.test_wfc_single_grid;
 import tests.tileset_audit;
 import tests.test_routes;
 import tests.test_td_sim;
+import tests.test_dialogue;
+import tests.test_village;
 
 // Pull every module's unit tests into the build.
-import core.bitset, core.noise, core.random, core.result;
+import core.bitset, core.noise, core.random, core.result, core.json, core.file;
+import story.state, story.script, story.events, story.dialogue, story.td_link;
+import village.walk, village.plan, village.world, village.bot;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
     viewer.commands, gfx.iso, gfx.camera, gfx.pick, gfx.hex_mesh, wfc.solver, wfc.tile_data,
@@ -58,6 +62,11 @@ int main(string[] args) {
     printf("tower defense (%s)\n", full ? "full".ptr : "quick".ptr);
     tests.test_td_sim.run(rep, full ? 20 : 3);
     tests.test_td_sim.runReveal(rep, full ? 20 : 6);
+
+    printf("story\n");
+    tests.test_dialogue.run(rep);
+    printf("village (%s)\n", full ? "full".ptr : "quick".ptr);
+    tests.test_village.run(rep, full ? 40 : 6);
 
     rep.check(withinMemory(memoryCeilingMiB, "integration"), "peak memory under ceiling");
     printf("integration: %d passed, %d failed, peak RSS %d MiB (ceiling %d MiB, timeout %d s)\n",

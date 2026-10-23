@@ -23,7 +23,7 @@ goto parse_args
 
 if not exist "build\obj" mkdir "build\obj"
 
-ldc2 -i=wfc -i=td -i=tests -i=viewer -i=gfx -i=core.bitset -i=core.noise -i=core.random -i=core.result -I. -Isrc ^
+ldc2 -i=wfc -i=td -i=tests -i=viewer -i=gfx -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc ^
     -defaultlib=druntime-ldc -fno-exceptions -g -unittest %SAN% -od=build\obj tests\test_runner.d -of="%OUT%"
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 

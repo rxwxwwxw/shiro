@@ -32,7 +32,7 @@ if [ $static -eq 1 ]; then
     case "$(uname -s)" in
         Darwin)
             ldc2 -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app -i=core.bitset -i=core.noise -i=core.random \
-                -i=core.result -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
+                -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
                 build/obj/nk_impl.o build/obj/gpu_scene.o "$prefix/lib/libSDL3.a" \
                 -L-framework -LCoreMedia -L-framework -LCoreVideo -L-framework -LCocoa -L-weak_framework -LUniformTypeIdentifiers \
                 -L-framework -LIOKit -L-framework -LForceFeedback -L-framework -LCarbon -L-framework -LCoreAudio \
@@ -42,14 +42,14 @@ if [ $static -eq 1 ]; then
             ;;
         *)
             ldc2 -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app -i=core.bitset -i=core.noise -i=core.random \
-                -i=core.result -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
+                -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
                 build/obj/nk_impl.o build/obj/gpu_scene.o "$prefix/lib/libSDL3.a" -L-lpthread -L-ldl -L-lm \
                 -of=bin/shiro_viewer
             ;;
     esac
 else
     ldc2 -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app -i=core.bitset -i=core.noise -i=core.random \
-        -i=core.result -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
+        -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w $opt $san -od=build/obj src/app.d \
         build/obj/nk_impl.o build/obj/gpu_scene.o -L-L"$prefix/lib" -L-lSDL3 -L-rpath -L"$origin" -L-rpath -L"$origin/../$prefix/lib" \
         -of=bin/shiro_viewer
     case "$(uname -s)" in
