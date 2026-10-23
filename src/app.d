@@ -720,6 +720,8 @@ private struct Viewer {
                 break;
             case SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6:
                 immutable k = cast(int)(e.key.key - SDLK_1);
+                if (game.active && (game.modifiers.lockedKinds & (1 << k)))
+                    break;
                 state.buildKind = state.buildKind == k ? -1 : k;
                 break;
             case SDLK_U:

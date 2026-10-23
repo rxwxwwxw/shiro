@@ -29,6 +29,23 @@ void internLinkVars(ref StoryState st) @nogc nothrow @safe {
         st.intern(n);
 }
 
+/// Where in the village a locked tower kind is earned (null if the story never locks it).
+const(char)* unlockHint(TowerKind k) @nogc nothrow pure @safe {
+    switch (k) {
+    case TowerKind.tesla:
+        return "Locked: ask Itzel at the temple for the serpent's lightning";
+    case TowerKind.flame:
+        return "Locked: ask Chu Tu at the smithy for fire pots";
+    default:
+        return null;
+    }
+}
+
+@nogc nothrow pure @safe unittest {
+    assert(unlockHint(TowerKind.tesla) !is null && unlockHint(TowerKind.flame) !is null);
+    assert(unlockHint(TowerKind.arrow) is null);
+}
+
 /// The run the story has earned: tesla and flame towers stay locked until their flags are set,
 /// bonus gold and a creep strength offset (in percent, clamped to 50..200) come from variables.
 RunModifiers fromStory(ref const StoryState st) @nogc nothrow @safe {

@@ -9,6 +9,7 @@ import core.stdc.stdio : snprintf;
 import gfx.hex_mesh : Lod, MapMesh;
 import td.defs;
 import td.game;
+import story.td_link : unlockHint;
 import viewer.commands;
 import wfc.decorations : buildingDefs, DecoKind;
 import wfc.grid_connector : MapRect;
@@ -163,12 +164,22 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
         char[48] buf = void;
         snprintf(buf.ptr, buf.length, st.buildKind == k ? "> %d %.*s %d <" : "%d %.*s %d", k + 1,
                 cast(int)def.name.length, def.name.ptr, def.cost);
-        immutable poor = g.gold < def.cost;
-        if (poor)
+        immutable locked = (g.modifiers.lockedKinds & (1 << k)) != 0;
+        immutable off = locked || g.gold < def.cost;
+        if (locked) {
+            if (st.buildKind == k)
+                st.buildKind = -1;
+            snprintf(buf.ptr, buf.length, "%d %.*s (locked)", k + 1, cast(int)def.name.length, def.name.ptr);
+            if (nk_widget_is_hovered(ctx)) {
+                const hint = unlockHint(cast(TowerKind)k);
+                nk_tooltip(ctx, hint !is null ? hint : "Not unlocked yet");
+            }
+        }
+        if (off)
             nk_widget_disable_begin(ctx);
         if (nk_button_label(ctx, buf.ptr))
             st.buildKind = st.buildKind == k ? -1 : k;
-        if (poor)
+        if (off)
             nk_widget_disable_end(ctx);
     }
     if (st.errorTimer > 0 && st.lastError > 0 && st.lastError < errorText.length) {

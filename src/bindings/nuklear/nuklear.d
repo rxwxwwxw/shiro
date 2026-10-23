@@ -71,6 +71,8 @@ bool nk_tree_push_hashed(nk_context* ctx, nk_tree_type type, const(char)* title,
 void nk_tree_pop(nk_context* ctx);
 void nk_widget_disable_begin(nk_context* ctx);
 void nk_widget_disable_end(nk_context* ctx);
+bool nk_widget_is_hovered(const(nk_context)* ctx);
+void nk_tooltip(nk_context* ctx, const(char)* text);
 void nk_label_colored(nk_context* ctx, const(char)* text, nk_flags align_, nk_color color);
 void nk_text_wrap(nk_context* ctx, const(char)* text, int len);
 void nk_text_colored(nk_context* ctx, const(char)* text, int len, nk_flags align_, nk_color color);
