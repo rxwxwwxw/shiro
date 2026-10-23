@@ -31,7 +31,7 @@ build_lib() {
     cmake --install "build/third-party/$name" --config Release
 }
 
-if [ $force -eq 1 ] || ! ls "$prefix"/lib/libSDL3.* >/dev/null 2>&1; then
+if [ $force -eq 1 ] || [ ! -f "$prefix/lib/libSDL3.a" ] || ! ls "$prefix"/lib/libSDL3.*so* "$prefix"/lib/libSDL3.*dylib* >/dev/null 2>&1; then
     build_lib SDL3 -DSDL_SHARED=ON -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF \
         -DSDL_EXAMPLES=OFF
 else

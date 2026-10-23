@@ -17,11 +17,11 @@ if %ERRORLEVEL% neq 0 (
 )
 
 if "%FORCE%"=="0" (
-    if exist "%PREFIX%\lib\SDL3.lib" (
+    if exist "%PREFIX%\lib\SDL3.lib" if exist "%PREFIX%\lib\SDL3-static.lib" (
         echo SDL3 already built (pass --force to rebuild)
         exit /b 0
     )
-    if exist "%PREFIX%\lib\libSDL3.dll.a" (
+    if exist "%PREFIX%\lib\libSDL3.dll.a" if exist "%PREFIX%\lib\libSDL3.a" (
         echo SDL3 already built (pass --force to rebuild)
         exit /b 0
     )

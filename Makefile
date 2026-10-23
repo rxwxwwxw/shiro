@@ -271,9 +271,11 @@ ifeq ($(FORCE),1)
 .PHONY: $(SDL3_HEADER)
 endif
 
-third-party: $(SDL3_HEADER)
+third-party: $(SDL3_HEADER) $(PREFIX)/lib/libSDL3.a
 
-$(SDL3_HEADER):
+$(PREFIX)/lib/libSDL3.a $(PREFIX)/lib/libSDL3.so $(PREFIX)/lib/libSDL3.dylib \
+$(PREFIX)/lib/SDL3-static.lib $(PREFIX)/lib/SDL3.lib $(PREFIX)/lib/libSDL3.dll.a \
+$(PREFIX)/bin/SDL3.dll $(SDL3_HEADER):
 	@echo "==> Building third-party dependencies: SDL3 (shared + static, $(PLATFORM))..."
 	$(MKDIR) $(BUILD_DIR)/third-party
 	$(CMAKE) -S third-party/SDL3 -B $(BUILD_DIR)/third-party/SDL3 \
