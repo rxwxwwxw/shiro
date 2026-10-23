@@ -19,7 +19,7 @@ import core.stdc.string : memcpy;
 import gfx.camera : Camera;
 import gfx.glb;
 import gfx.iso;
-import td.defs : SpecialKind, Stage, TowerKind;
+import td.defs : numTowerKinds, SpecialKind, Stage, TowerKind;
 import td.game : Game, Tower;
 import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames, towerVariant;
 import wfc.hex;
@@ -158,6 +158,8 @@ struct MapMesh {
     private const(Game)* game_;
     private MeshOptions opts;
     private const(GlbModel)* glb;
+    /// Purpose-built tower models (assets/models/td-towers.glb), or null to reuse village buildings.
+    private const(GlbModel)* towerGlb;
     private TexSet ts;
     private bool[numTiles] cliff, isCoast;
     private int texVariants = 1;
@@ -247,6 +249,8 @@ struct MapMesh {
         ts = TexSet.init;
         if (glb !is null)
             ts.resolve(*glb);
+        if (glb !is null && towerGlb !is null)
+            ts.resolveTowers(*towerGlb);
         foreach (i, ref t; tileList)
             cliff[i] = t.name.length >= 11 && t.name[0 .. 11] == "GRASS_CLIFF";
         foreach (i, ref t; tileList)
@@ -1071,6 +1075,11 @@ struct MapMesh {
         }
     }
 
+    /// Uses td-towers.glb (built by scripts/blender/td_towers.py) for towers; call before `setup`.
+    void setTowerModel(const(GlbModel)* model) @nogc nothrow @safe {
+        towerGlb = model;
+    }
+
     private static float towerScale(Stage s) @nogc nothrow pure @safe {
         return s == Stage.lv1 ? 0.82f : (s == Stage.lv2 ? 0.95f : 1.08f);
     }
@@ -1080,6 +1089,18 @@ struct MapMesh {
         if (game_ is null || !game_.active)
             return false;
         if (const t = game_.towerAt(col, row)) {
+            immutable angle0 = dirAngle[(col * 7 + row * 3) % 6];
+            // Own models carry their colors; the stage shows as size and a light wash of the tint.
+            immutable v = t.stage == Stage.branchA ? 1 : (t.stage == Stage.branchB ? 2 : 0);
+            ref const MeshRef own = ts.td[t.kind][ts.td[t.kind][v].valid ? v : 0];
+            if (own.valid) {
+                immutable sc = t.stage == Stage.lv1 ? 0.88f : 1.0f;
+                immutable k = towerTint(t.kind, t.stage);
+                immutable wash = Rgb(0.8f + 0.2f * k.r, 0.8f + 0.2f * k.g, 0.8f + 0.2f * k.b);
+                addShadow(own, cx, cz, baseY, sc);
+                addModel(own, cx, baseY, cz, angle0, sc, 1, wash, lvl);
+                return true;
+            }
             ref const MeshRef m = towerMesh(ts, t.kind);
             immutable sc = towerScale(t.stage);
             immutable tint = towerTint(t.kind, t.stage);
@@ -1352,6 +1373,20 @@ private struct TexSet {
     MeshRef[3] mountains;
     MeshRef[6] hills;
     MeshRef fort, henge, watchtower, mine, rockGold, rockLey;
+    /// td-towers.glb per tower kind: levels 1-2, branch A, branch B.
+    MeshRef[3][numTowerKinds] td;
+
+    void resolveTowers(ref const GlbModel g) @nogc nothrow @trusted {
+        static immutable string[3][numTowerKinds] names = [
+            ["td_arrow", "td_arrow_a", "td_arrow_b"], ["td_cannon", "td_cannon_a", "td_cannon_b"],
+            ["td_frost", "td_frost_a", "td_frost_b"], ["td_tesla", "td_tesla_a", "td_tesla_b"],
+            ["td_flame", "td_flame_a", "td_flame_b"], ["td_mine", "", ""]
+        ];
+        foreach (k; 0 .. numTowerKinds)
+            foreach (v; 0 .. 3)
+                if (names[k][v].length)
+                    g.find(names[k][v], td[k][v]);
+    }
 
     void resolve(ref const GlbModel g) @nogc nothrow @trusted {
         foreach (i, ref t; tileList)

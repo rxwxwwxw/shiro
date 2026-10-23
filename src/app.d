@@ -38,8 +38,12 @@ private enum string defaultAssets = "third-party/Hex-Map-WFC/public/assets";
 private struct Viewer {
     MapSession* session;
     GlbModel glb;
+    /// Tower models from the repository's assets/models/td-towers.glb (optional).
+    GlbModel towerGlb;
     Texture texture;
     Texture caustic;
+    /// Creep sprite atlas, assets/sprites/creeps.png (optional).
+    Texture creepSprites;
     Texture grain;
     MapMesh mesh;
     Overview overview;
@@ -239,6 +243,7 @@ private struct Viewer {
     }
 
     void rebuildMesh(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        mesh.setTowerModel(towerGlb.loaded ? &towerGlb : null);
         if (!mesh.setup(*session, state.mesh, haveModel ? &glb : null, texture.variants))
             fprintf(stderr, "out of memory preparing the map mesh\n");
         mesh.setGame(&game);
@@ -303,6 +308,31 @@ private struct Viewer {
             if (caustic.openCaustic(ren, lo.ptr, 0.29f, 17.5f, 0.40f) == EngineError.None)
                 break;
         }
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(lo.ptr, lo.length, "assets/sprites/creeps.png");
+            else if (base !is null)
+                snprintf(lo.ptr, lo.length, "%s../assets/sprites/creeps.png", base);
+            else
+                break;
+            if (creepSprites.openImage(ren, lo.ptr) == EngineError.None) {
+                overlay.setSprites(creepSprites.handle);
+                break;
+            }
+        }
+        // Tower models share the terrain's palette atlas, so they need no texture of their own.
+        foreach (attempt; 0 .. 2) {
+            if (attempt == 0)
+                snprintf(lo.ptr, lo.length, "assets/models/td-towers.glb");
+            else if (base !is null)
+                snprintf(lo.ptr, lo.length, "%s../assets/models/td-towers.glb", base);
+            else
+                break;
+            if (towerGlb.load(lo.ptr) == EngineError.None)
+                break;
+        }
+        if (!towerGlb.loaded)
+            fprintf(stderr, "td-towers.glb not found; towers reuse village buildings\n");
         // The reference blends its moody atlas into the winter one by elevation.
         snprintf(lo.ptr, lo.length, "%.*s/textures/moody.png", cast(int)dirLen, path.ptr);
         snprintf(hi.ptr, hi.length, "%.*s/textures/winter.png", cast(int)dirLen, path.ptr);

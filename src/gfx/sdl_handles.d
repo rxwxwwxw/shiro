@@ -162,6 +162,21 @@ struct Texture {
         return EngineError.None;
     }
 
+    /// A plain RGBA image (sprite atlas), linearly filtered and alpha blended.
+    EngineError openImage(ref Renderer r, const(char)* path) @nogc nothrow @trusted {
+        auto surf = SDL_LoadSurface(path);
+        if (surf is null)
+            return fail("image");
+        scope (exit)
+            SDL_DestroySurface(surf);
+        handle = SDL_CreateTextureFromSurface(r.handle, surf);
+        if (handle is null)
+            return fail("image texture");
+        SDL_SetTextureScaleMode(handle, SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(handle, SDL_BLENDMODE_BLEND);
+        return EngineError.None;
+    }
+
     /// The water sparkle layer: the reference's tileable caustic image as white with alpha
     /// floor + (1 - floor) * clamp((gray - brightness) * contrast) (the floor is a faint even sheen
     /// over all water), meant to be tiled over water with wrapped UVs.

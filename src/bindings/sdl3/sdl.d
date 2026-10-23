@@ -224,6 +224,7 @@ bool SDL_SetTextureBlendMode(SDL_Texture* texture, uint blendMode);
 bool SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const(SDL_FRect)* srcrect,
         const(SDL_FRect)* dstrect);
 SDL_Surface* SDL_LoadSurface(const(char)* file);
+bool SDL_GetTextureSize(SDL_Texture* texture, float* w, float* h);
 bool SDL_SetRenderTextureAddressMode(SDL_Renderer* renderer, int uMode, int vMode);
 enum int SDL_TEXTURE_ADDRESS_AUTO = 0, SDL_TEXTURE_ADDRESS_WRAP = 2;
 bool SDL_WaitEventTimeout(SDL_Event* event, int timeoutMS);

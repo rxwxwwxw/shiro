@@ -6,7 +6,7 @@
 module gfx.td_overlay;
 
 import bindings.sdl3.sdl;
-import core.stdc.math : cosf, sinf, sqrtf;
+import core.stdc.math : atan2f, cosf, sinf, sqrtf;
 import core.stdc.stdlib : free, qsort, realloc;
 import gfx.camera;
 import gfx.hex_mesh : MapMesh;
@@ -52,6 +52,12 @@ immutable CreepLook[numCreepKinds] creepLooks = [
     CreepLook(0.72f, SDL_FColor(0.92f, 0.28f, 0.30f, 1), SDL_FColor(0.38f, 0.06f, 0.10f, 1)) // boss
 ];
 
+/// Layout of assets/sprites/creeps.png (built by scripts/blender/td_creeps.py): per creep kind, 8
+/// facings x 4 walk frames of `spriteCell`-pixel squares, `spriteCols` to a row. A square spans
+/// `spriteSpan` iso units with the creep's ground point centered, `spriteAnchor` of the way down.
+enum int spriteCell = 128, spriteCols = 16, spriteFacings = 8, spriteFrames = 4;
+enum float spriteSpan = 2.0f, spriteAnchor = 0.75f;
+
 /// What the overlay should highlight besides the game itself.
 struct OverlayInput {
     /// Cell whose tower range is shown (the selected tower), or -1.
@@ -70,6 +76,13 @@ struct TdOverlay {
     private Key* keys;
     private size_t capKeys;
     private float zoom = 1;
+    /// Creep sprite atlas (borrowed), or null to draw creeps as shapes.
+    private SDL_Texture* sprites;
+    private float atlasW = 1, atlasH = 1;
+    // Textured quads for the sprites, a second batch drawn between the shadows and the bars.
+    private SDL_Vertex* sv;
+    private int* si;
+    private size_t nsv, nsi, capSV, capSI;
 
     @disable this(this);
 
@@ -77,6 +90,42 @@ struct TdOverlay {
         free(v);
         free(idx);
         free(keys);
+        free(sv);
+        free(si);
+    }
+
+    /// Draws creeps from the sprite atlas `tex` (owned by the caller; null: flat shapes).
+    void setSprites(SDL_Texture* tex) @nogc nothrow @trusted {
+        sprites = tex;
+        if (tex !is null)
+            SDL_GetTextureSize(tex, &atlasW, &atlasH);
+    }
+
+    private void spriteQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, SDL_FColor c) @nogc nothrow @trusted {
+        if (nsv + 4 > capSV) {
+            immutable cap = (nsv + 4) * 2 + 1024;
+            auto p = cast(SDL_Vertex*)realloc(sv, cap * SDL_Vertex.sizeof);
+            if (p is null)
+                return;
+            sv = p;
+            capSV = cap;
+        }
+        if (nsi + 6 > capSI) {
+            immutable cap = (nsi + 6) * 2 + 1536;
+            auto p = cast(int*)realloc(si, cap * int.sizeof);
+            if (p is null)
+                return;
+            si = p;
+            capSI = cap;
+        }
+        immutable a = cast(int)nsv;
+        sv[nsv++] = SDL_Vertex(SDL_FPoint(x, y), c, SDL_FPoint(u0, v0));
+        sv[nsv++] = SDL_Vertex(SDL_FPoint(x + w, y), c, SDL_FPoint(u1, v0));
+        sv[nsv++] = SDL_Vertex(SDL_FPoint(x + w, y + h), c, SDL_FPoint(u1, v1));
+        sv[nsv++] = SDL_Vertex(SDL_FPoint(x, y + h), c, SDL_FPoint(u0, v1));
+        static immutable int[6] corners = [0, 1, 2, 0, 2, 3];
+        foreach (k; corners)
+            si[nsi++] = a + k;
     }
 
     private bool reserve(size_t addV, size_t addI) @nogc nothrow @trusted {
@@ -227,8 +276,14 @@ struct TdOverlay {
             if (c.alive)
                 keys[nk++] = Key(c.py + (c.y - c.py) * alpha, cast(uint)i);
         qsort(keys, nk, Key.sizeof, &cmpKey);
+        nsv = nsi = 0;
         foreach (k; 0 .. nk)
             drawCreep(cam, mesh, creeps[keys[k].id], alpha, t, false);
+        if (nsi > 0) {
+            // Shadows (and anything before them) go under the sprites.
+            flush(r);
+            SDL_RenderGeometry(r, sprites, sv, cast(int)nsv, si, cast(int)nsi);
+        }
         foreach (k; 0 .. nk)
             drawCreep(cam, mesh, creeps[keys[k].id], alpha, t, true);
 
@@ -249,6 +304,14 @@ struct TdOverlay {
         immutable lift = look.radius * (1.0f + 0.25f * hop);
         immutable top = worldToScreen(cam, mesh, x, y, lift);
         if (barPass) {
+            // Sprites leave the stun stars to this pass, which draws over them.
+            if (sprites !is null && c.stunTicks > 0)
+                foreach (k; 0 .. 3) {
+                    immutable a = t * 6 + k * 2.094f;
+                    disc(top.x + cosf(a) * rad * 0.8f, top.y - rad * 1.05f + sinf(a) * rad * 0.25f,
+                            rad * 0.12f + 1, rad * 0.12f + 1, SDL_FColor(1, 1, 0.6f, 1),
+                            SDL_FColor(1, 0.85f, 0.2f, 1), 5);
+                }
             if (c.hp >= c.maxHp)
                 return;
             immutable w = rad * 2.2f > 14 ? rad * 2.2f : 14, h = zoom > 30 ? 4.0f : 3.0f;
@@ -260,6 +323,10 @@ struct TdOverlay {
         }
         disc(ground.x + rad * 0.2f, ground.y, rad * 0.95f, rad * 0.95f * squash, SDL_FColor(0, 0, 0,
                 0.35f), SDL_FColor(0, 0, 0, 0), 10);
+        if (sprites !is null) {
+            drawSprite(c, ground, x, y, t);
+            return;
+        }
         SDL_FColor body = look.body, rim = look.rim;
         if (c.slowTicks > 0) {
             body = mixc(body, SDL_FColor(0.6f, 0.85f, 1.0f, 1), 0.5f);
@@ -317,6 +384,34 @@ struct TdOverlay {
                 disc(top.x + cosf(a) * rad * 0.8f, top.y - rad * 1.05f + sinf(a) * rad * 0.25f,
                         rad * 0.12f + 1, rad * 0.12f + 1, SDL_FColor(1, 1, 0.6f, 1), SDL_FColor(1, 0.85f, 0.2f, 1), 5);
             }
+    }
+
+    /// The creep as a pre-rendered sprite: facing from its motion, walk frame from time, status
+    /// effects as a color wash.
+    private void drawSprite(ref const Creep c, IsoPoint ground, float x, float y, float t) @nogc nothrow @trusted {
+        immutable gx = (c.x - c.px) * isoPerX, gy = -(c.y - c.py) * isoPerY;
+        int facing = 0;
+        if (gx * gx + gy * gy > 1e-8f) {
+            facing = cast(int)(atan2f(gy, gx) * (spriteFacings / 6.2831853f) + spriteFacings + 0.5f);
+            facing %= spriteFacings;
+        }
+        int frame = 0;
+        if (c.stunTicks == 0) {
+            immutable rate = c.slowTicks > 0 ? 8.0f * (100 - c.slowPct) / 100.0f : 8.0f;
+            frame = cast(int)(t * rate + c.serial * 0.37f) % spriteFrames;
+        }
+        immutable i = (c.kind * spriteFacings + facing) * spriteFrames + frame;
+        immutable u0 = (i % spriteCols) * spriteCell / atlasW, v0 = (i / spriteCols) * spriteCell / atlasH;
+        immutable size = spriteSpan * zoom;
+        SDL_FColor tint = SDL_FColor(1, 1, 1, 1);
+        if (c.slowTicks > 0)
+            tint = mixc(tint, SDL_FColor(0.55f, 0.8f, 1.0f, 1), 0.5f);
+        if (c.chillTicks > 0)
+            tint = mixc(tint, SDL_FColor(0.85f, 0.95f, 1.0f, 1), 0.4f);
+        if (c.burnTicks > 0)
+            tint = mixc(tint, SDL_FColor(1.0f, 0.55f, 0.25f, 1), 0.35f + 0.25f * sinf(t * 25 + c.serial));
+        spriteQuad(ground.x - size * 0.5f, ground.y - size * spriteAnchor, size, size, u0, v0,
+                u0 + spriteCell / atlasW, v0 + spriteCell / atlasH, tint);
     }
 
     private void drawProjectile(ref const Camera cam, ref const MapMesh mesh, ref const Projectile p, float alpha) @nogc nothrow @trusted {
