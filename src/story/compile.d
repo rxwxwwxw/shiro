@@ -116,8 +116,8 @@ immutable Builtins[] builtinTable = [
 /// Statement kinds that own an indented body.
 bool hasBody(const(char)[] rule) @nogc nothrow pure @safe {
     foreach (r; [
-            "TypeDecl", "CharDecl", "PlaceDecl", "LabelDecl", "Option", "If", "Elif", "Else", "For"
-        ])
+        "TypeDecl", "CharDecl", "PlaceDecl", "LabelDecl", "Option", "If", "Elif", "Else", "For"
+    ])
         if (r == rule)
             return true;
     return false;
