@@ -52,6 +52,16 @@ struct Camera {
         cx = (minX + maxX) * 0.5f;
         cy = (minY + maxY) * 0.5f;
     }
+
+    /// Centers the bounds and zooms so their height fills the viewport; wider bounds run off the
+    /// sides (pan to see them).
+    void fitHeight(float minX, float minY, float maxX, float maxY) @nogc nothrow pure @safe {
+        immutable h = maxY - minY > 1e-3f ? maxY - minY : 1e-3f;
+        zoom = height / h * 0.98f;
+        zoom = zoom < minZoom ? minZoom : (zoom > maxZoom ? maxZoom : zoom);
+        cx = (minX + maxX) * 0.5f;
+        cy = (minY + maxY) * 0.5f;
+    }
 }
 
 @nogc nothrow pure @safe unittest {

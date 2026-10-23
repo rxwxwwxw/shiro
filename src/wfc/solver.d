@@ -446,7 +446,8 @@ struct Solver {
     private bool pruneChaining(size_t e, size_t tile) @nogc nothrow @trusted {
         foreach (d; 0 .. numHexDirs) {
             immutable n = st.nbr[e][d];
-            if (n < 0 || st.cells[n].collapsed)
+            // Fixed neighbors have no cell state (and already constrain their solve neighbors).
+            if (n < 0 || n >= numSolve || st.cells[n].collapsed)
                 continue;
             StateSet gone = st.cells[n].possibilities;
             gone.intersect(st.tileMask[tile]);
@@ -479,7 +480,8 @@ struct Solver {
 
             foreach (d; 0 .. numHexDirs) {
                 immutable n = st.nbr[e][d];
-                if (n < 0 || st.cells[n].collapsed)
+                // Fixed neighbors have no cell state (and already constrain their solve neighbors).
+                if (n < 0 || n >= numSolve || st.cells[n].collapsed)
                     continue;
                 immutable dir = cast(HexDir)d;
                 immutable allowed = rules.allowedAcross(*poss, dir);

@@ -82,6 +82,8 @@ struct DecorationParams {
     float treeThreshold = 0.55f;
     float buildingFrequency = 0.02f;
     float buildingThreshold = 0.74f;
+    /// Villages, road-end houses and windmills (off: bare land with trees only).
+    bool buildings = false;
     /// Octaves of simplex noise sampled for the clustering fields.
     int octaves = 2;
     /// One in N eligible coast grass cells gets a windmill.
@@ -188,7 +190,7 @@ struct Decorator {
         }
 
         HexDir exitDir;
-        if (state.tile == roadEndTile && deadEndExit(id, exitDir)) {
+        if (params.buildings && state.tile == roadEndTile && deadEndExit(id, exitDir)) {
             immutable v = pickBuilding(h >> 3);
             immutable top = v == towerVariant && hash01(h * 2654435761u) < params.towerTopChance;
             return Decoration(DecoKind.building, v, exitDir, top ? 1 : 0);
@@ -198,7 +200,7 @@ struct Decorator {
             return Decoration.init;
 
         // Coast windmill, facing the water.
-        if (state.level == 0 && (h % params.windmillOneIn) == 0) {
+        if (params.buildings && state.level == 0 && (h % params.windmillOneIn) == 0) {
             float vx = 0, vz = 0;
             bool water = false;
             foreach (d; 0 .. numHexDirs) {
@@ -227,7 +229,7 @@ struct Decorator {
         worldPos(c, x, z);
 
         // Village buildings where the building field is high.
-        if (field(noiseC, params.buildingFrequency, x, z) >= params.buildingThreshold) {
+        if (params.buildings && field(noiseC, params.buildingFrequency, x, z) >= params.buildingThreshold) {
             immutable v = pickBuilding(h >> 3);
             immutable top = v == towerVariant && hash01(h * 2654435761u) < params.towerTopChance;
             return Decoration(DecoKind.building, v, cast(HexDir)((h >> 20) % 6), top ? 1 : 0);
@@ -384,7 +386,7 @@ unittest {
     // Hand-built map: each rule fires on the right tile type with the right orientation.
     const rules = rulesForTest();
     auto map = TileMap(MapRect(12, 8));
-    auto dec = Decorator(rules, DecorationParams(7));
+    auto dec = Decorator(rules, DecorationParams(7, 0.05f, 0.55f, 0.02f, 0.74f, true));
     // Fill with water, then place specific tiles.
     foreach (row; 0 .. 8)
         foreach (col; 0 .. 12)
@@ -426,11 +428,11 @@ unittest {
     auto rng = Random(2026);
     assert(generateMap(tiles, 6, solver, rng).gridsFailed == 0);
 
-    auto dec = Decorator(rules, DecorationParams(42));
+    auto dec = Decorator(rules, DecorationParams(42, 0.05f, 0.55f, 0.02f, 0.74f, true));
     auto decos = DecorationMap(tiles.rect);
     decos.decorateAll(tiles, dec);
     auto decos2 = DecorationMap(tiles.rect);
-    auto dec2 = Decorator(rules, DecorationParams(42));
+    auto dec2 = Decorator(rules, DecorationParams(42, 0.05f, 0.55f, 0.02f, 0.74f, true));
     decos2.decorateAll(tiles, dec2);
 
     size_t grass, trees, windmills, buildings;
@@ -489,7 +491,7 @@ unittest {
     assert(decos.count(DecoKind.mountain) == tiles.countMountains);
     // A different seed produces a different layout.
     auto decos3 = DecorationMap(tiles.rect);
-    auto dec3 = Decorator(rules, DecorationParams(43));
+    auto dec3 = Decorator(rules, DecorationParams(43, 0.05f, 0.55f, 0.02f, 0.74f, true));
     decos3.decorateAll(tiles, dec3);
     bool differs = false;
     foreach (row; 0 .. tiles.rect.rows)

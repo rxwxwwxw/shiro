@@ -250,7 +250,7 @@ private struct Viewer {
         if (game.active && game.board.plan.enabled) {
             float x0, y0, x1, y1;
             mesh.windowBounds(game.board.window, x0, y0, x1, y1);
-            camera.fit(x0, y0, x1, y1);
+            camera.fitHeight(x0, y0, x1, y1);
             return;
         }
         camera.fit(mesh.minX, mesh.minY, mesh.maxX, mesh.maxY);

@@ -413,10 +413,20 @@ struct MapMesh {
     }
 
     /// Screen-space bounds of the cells of a window (as `minX` .. `maxY` are for the whole map).
-    void windowBounds(const Window w, out float x0, out float y0, out float x1, out float y1) const @nogc nothrow @safe {
+    /// Headroom above the top row is only what the window's tallest cells need.
+    void windowBounds(const Window w, out float x0, out float y0, out float x1, out float y1) const @nogc nothrow @trusted {
         x0 = w.col0 * 2 - 1;
         x1 = (w.col0 + w.cols) * 2 + 1;
-        y0 = rowY(w.row0) - (levelsCount * levelStep + 1.0f);
+        float top = 0;
+        foreach (row; w.row0 .. w.row0 + w.rows)
+            foreach (col; w.col0 .. w.col0 + w.cols) {
+                float lvl;
+                if (cellLevel(col, row, lvl)) {
+                    immutable t = (lvl + 1) * levelStep - (rowY(row) - rowY(w.row0));
+                    top = t > top ? t : top;
+                }
+            }
+        y0 = rowY(w.row0) - top - hexRadius * squash;
         y1 = rowY(w.row0 + w.rows - 1) + hexRadius * squash + 1.0f;
     }
 

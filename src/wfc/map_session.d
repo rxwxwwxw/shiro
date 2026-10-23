@@ -22,7 +22,8 @@ import wfc.road_rules;
 import wfc.routes;
 import wfc.rules;
 import wfc.solver;
-import wfc.tile_data : tileIdByName;
+import wfc.terrain;
+import wfc.tile_data : tileIdByName, tileList;
 import wfc.tile_map;
 
 enum Layout : ubyte {
@@ -52,6 +53,8 @@ struct GenParams {
     int rings = 2;
     uint seed = 1;
     GenOptions gen;
+    /// Noise-first hills, mountains, lakes and rivers that the tiles are fitted to.
+    TerrainParams terrain;
     DecorationParams deco;
     /// Sources, sinks and walled roads for tower defense play.
     RouteParams routes;
@@ -71,6 +74,9 @@ struct MapSession {
     private RoadNetwork network_;
     private NavMap navMap;
     private RevealPlan revealPlan;
+    private TerrainField terrainField;
+    private TerrainMasks terrainMasks;
+    private StateSet maskScratch;
     GenStats stats;
     /// Route validation of the last map (all zero when routes are disabled).
     RouteReport routeReport;
@@ -95,6 +101,7 @@ struct MapSession {
         s.rulesBuf = r;
         s.solver = Solver(r);
         RoadMasks.build(s.roadMasks, r);
+        TerrainMasks.build(s.terrainMasks, r);
         // Flank cells with terrain walls: no road, no flat grass.
         s.flankStates = s.roadMasks.allowed(0);
         foreach (lvl; 0 .. 5) {
@@ -172,7 +179,35 @@ struct MapSession {
 
     // WFC constraints from the planned network (member delegates: no closure allocation).
     private const(StateSet)* maskFor(const CubeCoord c) @nogc nothrow @trusted {
-        if (!network_.rect.contains(c))
+        const road = roadMaskFor(c);
+        if (!terrainField.allocated || nearNetwork(c))
+            return road;
+        const ter = terrainMasks.forClass(terrainField.classAt(c));
+        if (road is null)
+            return ter;
+        // Roads and their walls win where the terrain and the road plan disagree.
+        maskScratch = *road;
+        maskScratch.intersect(*ter);
+        return maskScratch.empty ? road : &maskScratch;
+    }
+
+    /// Roads climb on their own slopes, so the cells around them are left to the road plan.
+    private bool nearNetwork(const CubeCoord c) const @nogc nothrow @safe {
+        if (!network_.allocated)
+            return false;
+        if (network_.onNetwork(c))
+            return true;
+        foreach (d; 0 .. numHexDirs) {
+            immutable n1 = c.neighbor(cast(HexDir)d);
+            if (network_.onNetwork(n1) || network_.onNetwork(n1.neighbor(cast(HexDir)d))
+                    || network_.onNetwork(n1.neighbor(cast(HexDir)((d + 1) % 6))))
+                return true;
+        }
+        return false;
+    }
+
+    private const(StateSet)* roadMaskFor(const CubeCoord c) @nogc nothrow @trusted {
+        if (!network_.allocated || !network_.rect.contains(c))
             return null;
         immutable dirs = network_.roadDirs(c);
         if (dirs == 0 && lastParams.routes.flankTerrain && !network_.onNetwork(c)) {
@@ -185,6 +220,33 @@ struct MapSession {
                 }
         }
         return &roadMasks.allowed(dirs);
+    }
+
+    /// Mountains on the noise peaks: flat land well away from any road.
+    private void placePeaks() @nogc nothrow @trusted {
+        if (!terrainField.allocated)
+            return;
+        foreach (i; 0 .. tileMap.rect.cellCount) {
+            immutable c = tileMap.rect.cellAt(i);
+            if (!terrainField.isPeak(c) || !inMap(c))
+                continue;
+            immutable id = tileMap.get(c);
+            if (id < 0 || tileList[rulesBuf.states[id].tile].isSlope)
+                continue;
+            immutable k = decoMap.get(c).kind;
+            if (k != DecoKind.none && k != DecoKind.tree)
+                continue;
+            CubeCoord[19] near = void;
+            immutable n = cubeCoordsInRadius(c, 2, near[]);
+            bool nearRoad = false;
+            foreach (j; 0 .. n)
+                nearRoad |= network_.allocated && network_.onNetwork(near[j]);
+            if (nearRoad)
+                continue;
+            immutable o = cubeToOffset(c);
+            decoMap.set(c, Decoration(DecoKind.mountain, cast(ubyte)((o.col * 7 + o.row * 13) % 3),
+                    cast(HexDir)((o.col + o.row) % 6), 0));
+        }
     }
 
     private bool protectFor(const CubeCoord c) @nogc nothrow @trusted {
@@ -228,6 +290,14 @@ struct MapSession {
             return Result!GenStats.err(EngineError.BufferOverflow);
 
         immutable t0 = MonoTime.currTime;
+        if (p.terrain.enabled)
+            terrainField.build(rect, p.terrain, p.seed);
+        else
+            terrainField = TerrainField.init;
+        GenOptions gen = p.gen;
+        // The noise decides where land is; a forced grass center would fight it.
+        if (p.terrain.enabled)
+            gen.centerGrass = false;
         immutable routed = p.routes.enabled;
         immutable staged = routed && p.reveal.enabled && p.layout == Layout.rect;
         if (!staged)
@@ -283,21 +353,24 @@ struct MapSession {
             } else {
                 network_ = RoadNetwork.init;
                 revealPlan = RevealPlan.init;
+                if (p.terrain.enabled)
+                    cons.mask = &maskFor;
             }
             lastParams = p;
             generated = true;
             routeAttempts = attempt + 1;
             tileMap = TileMap(rect);
             if (p.layout == Layout.island)
-                stats = generateGrids(tileMap, grids[0 .. ng], p.radius, solver, rng, p.gen, cons);
+                stats = generateGrids(tileMap, grids[0 .. ng], p.radius, solver, rng, gen, cons);
             else
-                stats = generateMap(tileMap, p.radius, solver, rng, p.gen, cons);
+                stats = generateMap(tileMap, p.radius, solver, rng, gen, cons);
             DecorationParams dp = p.deco;
             dp.seed = p.seed;
             auto decorator = Decorator(rulesBuf, dp);
             decoMap = DecorationMap(rect);
             decoMap.decorateAll(tileMap, decorator);
             routeReport = RouteReport.init;
+            placePeaks();
             if (routed)
                 applyCorridors(decoMap, tileMap, network_, rulesBuf, p.routes.wallDepth, seed);
             navMap.build(tileMap, decoMap, network_, rulesBuf);

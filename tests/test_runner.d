@@ -25,7 +25,7 @@ import core.bitset, core.noise, core.random, core.result;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
     viewer.commands, gfx.iso, gfx.camera, gfx.pick, gfx.hex_mesh, wfc.solver, wfc.tile_data,
-    wfc.tile_map, td.defs, td.spatial, td.waves, td.board, td.game, td.bot, wfc.reveal;
+    wfc.tile_map, td.defs, td.spatial, td.waves, td.board, td.game, td.bot, wfc.reveal, wfc.terrain;
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];
