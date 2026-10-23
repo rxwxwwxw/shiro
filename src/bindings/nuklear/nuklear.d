@@ -10,6 +10,20 @@ struct nk_context;
 
 alias nk_flags = uint;
 
+struct nk_color {
+    ubyte r, g, b, a;
+}
+
+enum nk_tree_type : int {
+    NK_TREE_NODE,
+    NK_TREE_TAB
+}
+
+enum nk_collapse_states : int {
+    NK_MINIMIZED,
+    NK_MAXIMIZED
+}
+
 struct nk_rect {
     float x, y, w, h;
 }
@@ -47,3 +61,9 @@ bool nk_checkbox_label(nk_context* ctx, const(char)* label, bool* active);
 bool nk_option_label(nk_context* ctx, const(char)* label, bool active);
 bool nk_slider_float(nk_context* ctx, float min, float* val, float max, float step);
 bool nk_property_int(nk_context* ctx, const(char)* name, int min, int* val, int max, int step, float incPerPixel);
+bool nk_tree_push_hashed(nk_context* ctx, nk_tree_type type, const(char)* title,
+        nk_collapse_states initial, const(char)* hash, int len, int seed);
+void nk_tree_pop(nk_context* ctx);
+void nk_widget_disable_begin(nk_context* ctx);
+void nk_widget_disable_end(nk_context* ctx);
+void nk_label_colored(nk_context* ctx, const(char)* text, nk_flags align_, nk_color color);

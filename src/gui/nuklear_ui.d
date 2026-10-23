@@ -7,6 +7,8 @@ import bindings.sdl3.sdl : SDL_Event, SDL_Renderer, SDL_Window;
 import core.result : EngineError;
 import core.stdc.stdio : snprintf;
 import gfx.hex_mesh : Lod, MapMesh;
+import td.defs;
+import td.game;
 import viewer.commands;
 import wfc.decorations : buildingDefs, DecoKind;
 import wfc.grid_connector : MapRect;
@@ -63,6 +65,162 @@ private bool checkbox(nk_context* ctx, const(char)* label, ref bool v) @nogc not
     immutable before = v;
     nk_checkbox_label(ctx, label, &v);
     return v != before;
+}
+
+/// Collapsible section; `id` keeps its open state apart from other sections.
+private bool section(nk_context* ctx, const(char)* title, int id, bool open) @nogc nothrow @trusted {
+    return nk_tree_push_hashed(ctx, nk_tree_type.NK_TREE_TAB, title, open
+            ? nk_collapse_states.NK_MAXIMIZED : nk_collapse_states.NK_MINIMIZED, title, 0, id);
+}
+
+private immutable char*[10] errorText = [
+    "", "Outside the map", "Can't build there", "Already a tower there", "Mines go on gold veins only",
+    "Not enough gold", "No tower there", "Fully upgraded", "Not now", "Too many towers"
+];
+
+private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
+
+private void statsLine(nk_context* ctx, ref const Game g, ref const Tower t) @nogc nothrow @trusted {
+    const st = &towerStats(t.kind, t.stage);
+    if (t.kind == TowerKind.mine) {
+        labelf(ctx, "Income +%d gold per wave", st.income);
+        return;
+    }
+    immutable dmg = st.damage * (t.ley ? 100 + leyDamagePct : 100) / 100;
+    labelf(ctx, "Damage %d, range %.1f, %.1f/s", dmg, g.rangeOf(t) / cast(float)cellUnits,
+            cast(float)ticksPerSecond / st.cooldown);
+    labelf(ctx, "Kills %d, damage dealt %lld", t.kills, t.dealt);
+    if (t.ley || t.rangePct > 0)
+        labelf(ctx, "%s%s", t.ley ? "Ley stone +25%% dmg  ".ptr : "".ptr, t.rangePct > 0 ? "High ground".ptr : "".ptr);
+}
+
+/// Gold, lives, waves, building and the selected tower.
+private void gamePanel(nk_context* ctx, ref ViewerState st, ref GameQueue gq, ref const Game g) @nogc nothrow @trusted {
+    if (!g.active) {
+        nk_layout_row_dynamic(ctx, 16, 1);
+        nk_label(ctx, "Turn on roads to play", NK_TEXT_LEFT);
+        return;
+    }
+    nk_layout_row_dynamic(ctx, 18, 2);
+    labelf(ctx, "Gold %d", g.gold);
+    labelf(ctx, "Lives %d", g.lives);
+    nk_layout_row_dynamic(ctx, 18, 1);
+    final switch (g.status) {
+    case GameStatus.waiting:
+        labelf(ctx, "Wave %d/%d next in %d s", g.waveNo + 1, totalWaves,
+                (g.countdown + ticksPerSecond - 1) / ticksPerSecond);
+        break;
+    case GameStatus.wave:
+        labelf(ctx, "Wave %d/%d: %d creeps left", g.waveNo, totalWaves,
+                g.creepsAlive + g.pendingSpawns);
+        break;
+    case GameStatus.lost:
+        nk_label_colored(ctx, "Defeat! Press R for a new map", NK_TEXT_LEFT,
+                nk_color(255, 90, 80, 255));
+        break;
+    case GameStatus.won:
+        nk_label_colored(ctx, "Victory! All waves held", NK_TEXT_LEFT, nk_color(120, 230, 120, 255));
+        break;
+    }
+    nk_layout_row_dynamic(ctx, 24, 2);
+    if (g.status != GameStatus.waiting)
+        nk_widget_disable_begin(ctx);
+    if (nk_button_label(ctx, "Next wave (Space)"))
+        gq.push(GameCommand(CommandType.startWave));
+    if (g.status != GameStatus.waiting)
+        nk_widget_disable_end(ctx);
+    if (nk_button_label(ctx, st.speed == 0 ? "Resume (P)" : "Pause (P)"))
+        st.speed = st.speed == 0 ? 1 : 0;
+    nk_layout_row_dynamic(ctx, 20, 4);
+    nk_label(ctx, "Speed", NK_TEXT_LEFT);
+    foreach (s; 1 .. 4) {
+        static immutable char*[3] speedNames = ["1x", "2x", "3x"];
+        if (nk_option_label(ctx, speedNames[s - 1], st.speed == s))
+            st.speed = s;
+    }
+    nk_layout_row_dynamic(ctx, 20, 1);
+    checkbox(ctx, "Bot plays (B)", st.bot);
+
+    nk_layout_row_dynamic(ctx, 18, 1);
+    nk_label(ctx, "Build (1-6, right click cancels)", NK_TEXT_LEFT);
+    nk_layout_row_dynamic(ctx, 24, 2);
+    foreach (k; 0 .. numTowerKinds) {
+        const def = &towerStats(cast(TowerKind)k, Stage.lv1);
+        char[48] buf = void;
+        snprintf(buf.ptr, buf.length, st.buildKind == k ? "> %d %.*s %d <" : "%d %.*s %d", k + 1,
+                cast(int)def.name.length, def.name.ptr, def.cost);
+        immutable poor = g.gold < def.cost;
+        if (poor)
+            nk_widget_disable_begin(ctx);
+        if (nk_button_label(ctx, buf.ptr))
+            st.buildKind = st.buildKind == k ? -1 : k;
+        if (poor)
+            nk_widget_disable_end(ctx);
+    }
+    if (st.errorTimer > 0 && st.lastError > 0 && st.lastError < errorText.length) {
+        nk_layout_row_dynamic(ctx, 16, 1);
+        nk_label_colored(ctx, errorText[st.lastError], NK_TEXT_LEFT, nk_color(255, 120, 100, 255));
+    }
+
+    const t = g.towerAt(st.selCol, st.selRow);
+    if (t is null) {
+        immutable sp = g.board.special(st.selCol, st.selRow);
+        nk_layout_row_dynamic(ctx, 16, 1);
+        if (sp == SpecialKind.goldVein)
+            nk_label(ctx, "Gold vein: build a Mine (6) here", NK_TEXT_LEFT);
+        else if (sp == SpecialKind.leyStone)
+            nk_label(ctx, "Ley stone: towers here deal +25%", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 6, 1);
+        return;
+    }
+    const cur = &towerStats(t.kind, t.stage);
+    nk_layout_row_dynamic(ctx, 18, 1);
+    labelf(ctx, "%.*s  (%.*s)", cast(int)cur.name.length, cur.name.ptr, cast(int)cur.blurb.length, cur.blurb.ptr);
+    nk_layout_row_dynamic(ctx, 16, 1);
+    statsLine(ctx, g, *t);
+    if (t.kind != TowerKind.mine) {
+        nk_layout_row_dynamic(ctx, 20, 4);
+        nk_label(ctx, "Target", NK_TEXT_LEFT);
+        foreach (m; 0 .. 3)
+            if (nk_option_label(ctx, targetingNames[m], t.targeting == m) && t.targeting != m)
+                gq.push(GameCommand(CommandType.setTargeting, t.kind, cast(ubyte)m, t.col, t.row));
+    }
+    void upgradeButton(int branch, Stage next) {
+        const ns = &towerStats(t.kind, next);
+        char[64] buf = void;
+        snprintf(buf.ptr, buf.length, "%s %.*s (%d)", t.stage == Stage.lv1 ? "Upgrade U:".ptr
+                : (branch == 0 ? "Q:".ptr : "E:".ptr), cast(int)ns.name.length, ns.name.ptr, ns.cost);
+        immutable poor = g.gold < ns.cost;
+        if (poor)
+            nk_widget_disable_begin(ctx);
+        if (nk_button_label(ctx, buf.ptr))
+            gq.push(GameCommand(CommandType.upgrade, t.kind, cast(ubyte)branch, t.col, t.row));
+        if (poor)
+            nk_widget_disable_end(ctx);
+    }
+
+    Stage next;
+    if (nextStage(t.kind, t.stage, 0, next)) {
+        if (t.stage == Stage.lv1) {
+            nk_layout_row_dynamic(ctx, 24, 1);
+            upgradeButton(0, next);
+        } else {
+            foreach (b; 0 .. 2) {
+                nextStage(t.kind, t.stage, b, next);
+                nk_layout_row_dynamic(ctx, 24, 1);
+                upgradeButton(b, next);
+                const ns = &towerStats(t.kind, next);
+                nk_layout_row_dynamic(ctx, 14, 1);
+                labelf(ctx, "   %.*s", cast(int)ns.blurb.length, ns.blurb.ptr);
+            }
+        }
+    }
+    nk_layout_row_dynamic(ctx, 24, 1);
+    char[40] sell = void;
+    snprintf(sell.ptr, sell.length, "Sell for %d (Del)", t.invested * sellPercent / 100);
+    if (nk_button_label(ctx, sell.ptr))
+        gq.push(GameCommand(CommandType.sell, t.kind, 0, t.col, t.row));
+    nk_layout_row_dynamic(ctx, 6, 1);
 }
 
 private immutable char*[5] edgeNames = ["grass", "water", "road", "river", "coast"];
@@ -150,19 +308,48 @@ private void tileInfo(nk_context* ctx, ref const ViewerState st, ref const MapSe
 }
 
 /// Draws the panel. Call between nk_input_end (done here) and NuklearContext.render.
-void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref const MapSession session,
-        ref const MapMesh mesh, bool haveModel, float viewHeight) @nogc nothrow @trusted {
+void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref GameQueue gq,
+        ref const Game game, ref const MapSession session, ref const MapMesh mesh, bool haveModel, float viewHeight) @nogc nothrow @trusted {
     auto ctx = ui.ctx;
     nk_input_end(ctx);
     if (!st.showPanel)
         return;
     scope (exit)
         nk_end(ctx);
-    if (!nk_begin(ctx, "Hex Map WFC", nk_rect(0, 0, panelWidth, viewHeight), NK_WINDOW_BORDER | NK_WINDOW_TITLE))
+    if (!nk_begin(ctx, "Shiro Tower Defense", nk_rect(0, 0, panelWidth, viewHeight),
+            NK_WINDOW_BORDER | NK_WINDOW_TITLE))
         return;
     auto p = &st.params;
 
-    tileInfo(ctx, st, session);
+    if (section(ctx, "Game", 1, true)) {
+        gamePanel(ctx, st, gq, game);
+        nk_tree_pop(ctx);
+    }
+    if (section(ctx, "Tile", 2, false)) {
+        tileInfo(ctx, st, session);
+        nk_tree_pop(ctx);
+    }
+    if (section(ctx, "Map generation", 3, false)) {
+        generationPanel(ctx, st, q);
+        nk_tree_pop(ctx);
+    }
+    if (section(ctx, "View", 4, false)) {
+        viewPanel(ctx, st, q, haveModel);
+        nk_tree_pop(ctx);
+    }
+    if (section(ctx, "Stats", 5, false)) {
+        statsPanel(ctx, st, session, mesh);
+        nk_tree_pop(ctx);
+    }
+    nk_layout_row_dynamic(ctx, 16, 1);
+    nk_label(ctx, "Drag: pan   Wheel: zoom   Click: select", NK_TEXT_LEFT);
+    nk_label(ctx, "U upgrade  Q/E branch  Del sell  T target", NK_TEXT_LEFT);
+    nk_label(ctx, "R: new map  F: fit  Tab: panel  Esc: cancel/quit", NK_TEXT_LEFT);
+    cast(void)p;
+}
+
+private void generationPanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q) @nogc nothrow @trusted {
+    auto p = &st.params;
     nk_layout_row_dynamic(ctx, 18, 1);
     nk_label(ctx, "Layout", NK_TEXT_LEFT);
     nk_layout_row_dynamic(ctx, 22, 2);
@@ -229,9 +416,9 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
         checkbox(ctx, "Terrain walls (cliff, river, coast)", p.routes.flankTerrain);
     }
 
-    nk_layout_row_dynamic(ctx, 8, 1);
-    nk_layout_row_dynamic(ctx, 18, 1);
-    nk_label(ctx, "View", NK_TEXT_LEFT);
+}
+
+private void viewPanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, bool haveModel) @nogc nothrow @trusted {
     nk_layout_row_dynamic(ctx, 22, 1);
     bool meshChanged = checkbox(ctx, "Decorations", st.mesh.decorations);
     if (haveModel)
@@ -250,8 +437,9 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
         q.push(CommandKind.fitView);
     if (nk_button_label(ctx, "Save BMP"))
         q.push(CommandKind.screenshot);
+}
 
-    nk_layout_row_dynamic(ctx, 8, 1);
+private void statsPanel(nk_context* ctx, ref const ViewerState st, ref const MapSession session, ref const MapMesh mesh) @nogc nothrow @trusted {
     nk_layout_row_dynamic(ctx, 16, 1);
     const map = &session.tiles();
     const s = &session.stats;
@@ -274,9 +462,4 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     labelf(ctx, "Detail: %s (quality %.0f%%)", lodNames[mesh.lod], mesh.quality * 100);
     labelf(ctx, "Cached %zu verts, %.1f MB", mesh.vertexCount, mesh.bytes / (1024.0 * 1024.0));
     labelf(ctx, "%.0f fps, %zu verts drawn", st.fps, st.drawnVerts);
-    nk_layout_row_dynamic(ctx, 8, 1);
-    nk_layout_row_dynamic(ctx, 16, 1);
-    nk_label(ctx, "Drag: pan   Wheel: zoom   Click: inspect", NK_TEXT_LEFT);
-    nk_label(ctx, "R: new seed  F: fit  O: outlines", NK_TEXT_LEFT);
-    nk_label(ctx, "Tab: toggle panel  Esc: quit", NK_TEXT_LEFT);
 }

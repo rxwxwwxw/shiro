@@ -3,6 +3,7 @@
 module viewer.commands;
 
 import gfx.hex_mesh : MeshOptions;
+import td.game : GameCommand;
 import wfc.map_session : GenParams;
 
 enum CommandKind : ubyte {
@@ -62,6 +63,44 @@ struct CommandQueue {
     }
 }
 
+/// Game commands from the keyboard, mouse and panel, applied by the main loop between ticks.
+struct GameQueue {
+    enum size_t capacity = 32;
+    private GameCommand[capacity] items;
+    private size_t head, count;
+
+    bool push(const GameCommand c) @nogc nothrow pure @safe {
+        if (count == capacity)
+            return false;
+        items[(head + count) % capacity] = c;
+        count++;
+        return true;
+    }
+
+    bool pop(out GameCommand c) @nogc nothrow pure @safe {
+        if (count == 0)
+            return false;
+        c = items[head];
+        head = (head + 1) % capacity;
+        count--;
+        return true;
+    }
+}
+
+@nogc nothrow pure @safe unittest {
+    import td.game : CommandType;
+
+    GameQueue q;
+    GameCommand c;
+    assert(!q.pop(c));
+    foreach (i; 0 .. GameQueue.capacity)
+        assert(q.push(GameCommand(CommandType.place, cast(typeof(c.kind))0, 0, cast(int)i, 0)));
+    assert(!q.push(GameCommand(CommandType.startWave)));
+    foreach (i; 0 .. GameQueue.capacity)
+        assert(q.pop(c) && c.col == i);
+    assert(!q.pop(c));
+}
+
 /// Everything the panel edits and displays. Generation parameters take effect on `regenerate`.
 struct ViewerState {
     GenParams params;
@@ -77,6 +116,15 @@ struct ViewerState {
     bool grain = false;
     /// Cell under the pointer and the clicked cell (column, row); -1 when none.
     int hoverCol = -1, hoverRow = -1, selCol = -1, selRow = -1;
+    /// Tower kind being placed (a td.defs.TowerKind), or -1.
+    int buildKind = -1;
+    /// Game speed: 0 = paused, else ticks run at this multiple of real time.
+    int speed = 1;
+    /// The scripted bot plays.
+    bool bot;
+    /// Last command's refusal (td.game.CommandError), shown in the panel briefly.
+    int lastError;
+    float errorTimer = 0;
     float fps = 0;
     size_t drawnVerts;
 }

@@ -38,6 +38,10 @@ struct ViewerConfig {
     /// Directory holding models/hex-terrain.glb. NUL-terminated.
     char[1024] assets = 0;
     bool hasAssets;
+    /// Let the scripted bot play the tower defense game.
+    bool bot;
+    /// Simulation ticks to run before the first frame (with --screenshot: a mid-game picture).
+    int ticks;
 }
 
 immutable string usage = "usage: shiro_viewer [options]
@@ -59,6 +63,8 @@ immutable string usage = "usage: shiro_viewer [options]
   --slow N               pretend draws take N times longer (tests the quality adaptation)
   --classic              default SDL 2D renderer, CPU-expanded geometry (for comparison)
   --flat                 flat-shaded shapes instead of the Hex-Map-WFC models
+  --bot                  let the scripted bot build and upgrade towers
+  --ticks N              advance the game N ticks (30 per second) before the first frame
 ";
 
 private bool parseInt(const(char)[] s, out int v) @nogc nothrow pure @safe {
@@ -100,6 +106,10 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.classic = true;
             continue;
         }
+        if (a == "--bot") {
+            cfg.bot = true;
+            continue;
+        }
         if (a == "--no-roads") {
             cfg.params.routes.enabled = false;
             continue;
@@ -120,6 +130,11 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
                 cfg.params.layout = Layout.island;
             else
                 return R.err(CliError.badLayout);
+            break;
+        case "--ticks":
+            if (!num())
+                return R.err(CliError.badNumber);
+            cfg.ticks = n;
             break;
         case "--cols":
             if (!num())

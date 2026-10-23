@@ -316,6 +316,23 @@ When backtracking, each pruned possibility on the trail is re-enabled up to the 
 * Cross-compile checks pass for `x86_64-linux-gnu` and `x86_64-windows-msvc`.
 * Valgrind Memcheck was not run: it is not available on this macOS host. Run the command from `AGENTS.md` section 7.2 on Linux before release.
 
+### Phase 11: Tower Defense Gameplay
+* [x] `src/td/`: headless, deterministic game model.
+  - `defs`: stat tables.
+  - `board`: walk/build flags, sink distance field, special tiles.
+  - `spatial`: bucket grid for range queries.
+  - `waves`: seeded wave builder.
+  - `game`: creeps, towers, projectiles, burning ground, gold and lives, commands, per-tick events.
+  - `bot`: scripted player.
+* [x] Five towers (Arrow, Cannon, Frost, Tesla, Flame), each Lv1 → Lv2 → one of two specializations. Mines go on gold veins; ley stones and high ground give bonuses.
+* [x] View:
+  - towers baked into the map chunks (re-built per cell on change)
+  - `gfx/td_overlay` for creeps, projectiles and range rings
+  - `gfx/particles` for explosions, frost, lightning, fire, deaths and gold
+  - game panel and keyboard controls
+* [x] Tests: colocated unittests for every td module. `tests/test_td_sim.d` checks that bot games end, replay bit-identically and stay in their pools, and that an undefended map is lost.
+* [x] Benchmark: `bench_td_tick` runs about 1,000 creeps and 400 towers at about 20 us avg and 23 us p95 per tick (Apple silicon, `-O3`); the budget is 2 ms.
+
 ---
 
 ## 6. Verification Checklist & Success Criteria

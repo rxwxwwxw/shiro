@@ -131,4 +131,33 @@ bin/shiro_viewer --cells 20000 --aspect 16:9 --radius 6
 bin/shiro_viewer --cols 120 --rows 60 --screenshot map.bmp   # render one frame and exit
 ```
 
-Controls: drag to pan, wheel or `+`/`-` to zoom, `R` new seed, `F` fit, `O` cell outlines, `Tab` toggle panel, `Esc` quit. The POSIX scripts are the only build path for now; a Windows `.bat` hasn't been written yet.
+Controls: drag to pan, wheel or `+`/`-` to zoom, `R` new seed, `F` fit, `O` cell outlines, `Tab` toggle panel, `Esc` quit.
+
+### Playing tower defense
+
+Every map with roads is a game. You start with 300 gold and 20 lives, and there are 30 waves. A wave starts when its countdown ends; calling it early (`Space`) pays a gold for each second skipped.
+
+| Tower | Lv1 / Lv2 | Specializations (choose at Lv2) |
+| :--- | :--- | :--- |
+| Arrow (`1`) | fast single shots | **Longbow**: huge range, pierces armor. **Volley**: three arrows at once |
+| Cannon (`2`) | shells that splash | **Cluster**: throws 4 bomblets. **Siege**: massive blast, shreds armor |
+| Frost (`3`) | shards that slow an area | **Blizzard**: pulses to slow everything in range. **Shatter**: chilled creeps take +40% |
+| Tesla (`4`) | chain lightning, ignores armor | **Storm**: arcs through 9 creeps. **Overload**: one huge bolt that stuns |
+| Flame (`5`) | short burning cone | **Inferno**: wide cone, long burn. **Napalm**: leaves burning ground |
+| Mine (`6`) | +25 / +60 gold per wave | only on gold veins |
+
+Special tiles:
+- **Gold veins** (gold rocks) take mines only.
+- **Ley stones** (cyan rocks) give a tower +25% damage.
+- **High ground** adds 12% range per level above the nearest road, up to +36%.
+
+The creeps are Grunts, fast Runners, armored Brutes, Swarmlings that come in packs, and a Boss every 10th wave.
+
+Game keys:
+- Click places the tower you picked; otherwise it selects.
+- Right click cancels building.
+- `U` upgrades to Lv2; `Q` / `E` pick a specialization.
+- `Del` sells for 70%; `T` cycles targeting (first / strongest / closest).
+- `P` pauses; `,` / `.` change speed (1-3x); `B` lets the scripted bot play.
+
+`bin/shiro_viewer --bot --ticks 6000 --screenshot td.bmp` renders a bot game partway through. The rules live in `src/td/` (headless and deterministic). `tests/run_tests.sh` plays whole bot games, and `benchmarks/bench_td_tick.d` times the tick. The POSIX scripts are the only build path for now; a Windows `.bat` hasn't been written yet.

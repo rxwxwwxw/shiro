@@ -19,6 +19,8 @@ import core.stdc.string : memcpy;
 import gfx.camera : Camera;
 import gfx.glb;
 import gfx.iso;
+import td.defs : SpecialKind, Stage, TowerKind;
+import td.game : Game, Tower;
 import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames, towerVariant;
 import wfc.hex;
 import wfc.map_session : MapSession;
@@ -151,6 +153,8 @@ private enum size_t cacheBudget = 160 << 20;
 /// one row is generated the first time it is on screen, so memory follows the view, not the map.
 struct MapMesh {
     private const(MapSession)* sess;
+    /// Towers and special tiles drawn in place of decorations (null: none).
+    private const(Game)* game_;
     private MeshOptions opts;
     private const(GlbModel)* glb;
     private TexSet ts;
@@ -378,6 +382,19 @@ struct MapMesh {
         return true;
     }
 
+    /// Draws `g`'s towers and special tiles with the map (call `invalidateCell` when one changes).
+    void setGame(const(Game)* g) @nogc nothrow @trusted {
+        game_ = g;
+        clearCache();
+    }
+
+    /// Drops the cached chunk holding a cell so it is rebuilt (a tower was built, upgraded or sold).
+    void invalidateCell(int col, int row) @nogc nothrow @trusted {
+        if (chunks is null || col < 0 || row < 0 || col >= colCount || row >= rowCount)
+            return;
+        freeChunk(chunks[cast(size_t)row * blockCount + col / blockCols]);
+    }
+
     /// The GPU copy of an already built chunk, or null.
     void* gpuHandle(int row, int block) @nogc nothrow @trusted {
         return chunks[cast(size_t)row * blockCount + block].gpu;
@@ -541,6 +558,8 @@ struct MapMesh {
             foreach (k; 0 .. 6)
                 addLine(corner[k], corner[(k + 1) % 6], 0.035f, pack(outline, 1.0f, 0.45f));
 
+        if (addStructureFlat(col, row, cx, cz, h[6]))
+            return;
         if (opt.decorations) {
             immutable deco = s.decorations.get(c);
             if (deco.kind != DecoKind.none)
@@ -982,6 +1001,89 @@ struct MapMesh {
         }
     }
 
+    // ---- tower defense structures ---------------------------------------------------------
+
+    /// Model, scale and tint of a tower: the kind picks the building, the stage its size and color.
+    private static ref const(MeshRef) towerMesh(return ref const TexSet ts, TowerKind k) @nogc nothrow @safe {
+        final switch (k) {
+        case TowerKind.arrow:
+            return ts.buildings[towerVariant];
+        case TowerKind.cannon:
+            return ts.fort.valid ? ts.fort : ts.buildings[7];
+        case TowerKind.frost:
+            return ts.henge.valid ? ts.henge : ts.buildings[2];
+        case TowerKind.tesla:
+            return ts.watchtower.valid ? ts.watchtower : ts.buildings[towerVariant];
+        case TowerKind.flame:
+            return ts.buildings[7];
+        case TowerKind.mine:
+            return ts.mine.valid ? ts.mine : ts.buildings[5];
+        }
+    }
+
+    private static float towerScale(Stage s) @nogc nothrow pure @safe {
+        return s == Stage.lv1 ? 0.82f : (s == Stage.lv2 ? 0.95f : 1.08f);
+    }
+
+    /// True if a tower or special tile was drawn (the cell's decoration is then skipped).
+    private bool addStructure(int col, int row, ref const TexSet ts, float cx, float cz, float baseY, float lvl) @nogc nothrow @trusted {
+        if (game_ is null || !game_.active)
+            return false;
+        if (const t = game_.towerAt(col, row)) {
+            ref const MeshRef m = towerMesh(ts, t.kind);
+            immutable sc = towerScale(t.stage);
+            immutable tint = towerTint(t.kind, t.stage);
+            immutable angle = dirAngle[(col * 7 + row * 3) % 6];
+            addShadow(m, cx, cz, baseY, sc);
+            addModel(m, cx, baseY, cz, angle, sc, 1, tint, lvl);
+            if (t.kind == TowerKind.arrow && t.stage != Stage.lv1)
+                addModel(ts.towerTop, cx, baseY, cz, angle, sc, 1, tint, lvl);
+            if (t.kind == TowerKind.tesla && t.stage >= Stage.branchA)
+                addModel(ts.towerTop, cx, baseY + 0.25f, cz, angle, sc * 0.8f, 1, tint, lvl);
+            return true;
+        }
+        immutable sp = game_.board.special(col, row);
+        if (sp == SpecialKind.none)
+            return false;
+        ref const MeshRef r = sp == SpecialKind.goldVein ? ts.rockGold : ts.rockLey;
+        immutable tint = specialTint(sp);
+        // A small cluster of stones.
+        static immutable float[3][3] spots = [
+            [-0.3f, -0.2f, 1.0f], [0.32f, -0.05f, 0.8f], [0.0f, 0.3f, 0.7f]
+        ];
+        foreach (k, ref p; spots) {
+            addModel(r, cx + p[0], baseY - r.lo[1] * p[2], cz + p[1], (col + k) * 1.3f, p[2], 1, tint, lvl);
+        }
+        return true;
+    }
+
+    /// Flat-shape look of the same: a colored keep per tower, crystals for special tiles.
+    private bool addStructureFlat(int col, int row, float cx, float cz, float hc) @nogc nothrow @trusted {
+        if (game_ is null || !game_.active)
+            return false;
+        if (const t = game_.towerAt(col, row)) {
+            immutable sc = towerScale(t.stage);
+            immutable tint = towerTint(t.kind, t.stage);
+            immutable roof = flatRoof[t.kind];
+            addHouse(cx, cz, hc, 0.30f * sc, 0.30f * sc, (t.kind == TowerKind.mine ? 1.0f : 2.2f) * sc,
+                    0.9f * sc, Rgb(0.80f * tint.r, 0.78f * tint.g, 0.74f * tint.b), roof);
+            return true;
+        }
+        immutable sp = game_.board.special(col, row);
+        if (sp == SpecialKind.none)
+            return false;
+        immutable c = specialTint(sp);
+        foreach (k; 0 .. 3) {
+            immutable ox = (k - 1) * 0.35f, oz = (k == 1 ? -0.15f : 0.15f);
+            immutable top = project(cx + ox, cz + oz, hc + 1.4f - (k != 1) * 0.5f);
+            immutable l = project(cx + ox - 0.16f, cz + oz, hc), rt = project(cx + ox + 0.16f, cz + oz, hc);
+            immutable f = project(cx + ox, cz + oz + 0.12f, hc);
+            triangle(l, f, top, pack(c, 0.75f));
+            triangle(f, rt, top, pack(c, 1.0f));
+        }
+        return true;
+    }
+
     private void addCellTextured(ref const MapSession s, CubeCoord c, int col, int row,
             const MeshOptions opt, ref const TexSet ts) @nogc nothrow @trusted {
         if (!s.inMap(c))
@@ -1006,6 +1108,8 @@ struct MapMesh {
         flatRim = false;
         if (isCoast[st.tile] && opt.decorations)
             addShoreFoam(ts.tile[st.tile], cx, tileSurface + tileY, cz, theta);
+        if (addStructure(col, row, ts, cx, cz, tileSurface + tileY, lvl))
+            return;
         if (!opt.decorations)
             return;
         if (st.tile == waterTile)
@@ -1197,6 +1301,7 @@ private struct TexSet {
     MeshRef[2] bridges;
     MeshRef[3] mountains;
     MeshRef[6] hills;
+    MeshRef fort, henge, watchtower, mine, rockGold, rockLey;
 
     void resolve(ref const GlbModel g) @nogc nothrow @trusted {
         foreach (i, ref t; tileList)
@@ -1230,5 +1335,57 @@ private struct TexSet {
         ];
         foreach (i, n; hillNames)
             g.find(n, hills[i]);
+        g.find("fort", fort);
+        g.find("henge", henge);
+        if (!g.find("building_watchtower_yellow", watchtower))
+            g.find("building_watchtower", watchtower);
+        if (!g.find("building_mine_yellow", mine))
+            g.find("mine", mine);
+        g.find("rock_single_A", rockGold);
+        g.find("rock_single_E", rockLey);
     }
+}
+
+/// Tower colors: the kind's base tint, washed out at Lv1, full at Lv2, and a distinct accent for
+/// each specialization so A and B read apart at a glance.
+private immutable Rgb[numTowerKindsView] kindTint = [
+    Rgb(1.00f, 0.95f, 0.85f), // arrow: warm stone
+    Rgb(0.85f, 0.80f, 0.78f), // cannon: grey iron
+    Rgb(0.70f, 0.88f, 1.00f), // frost: ice
+    Rgb(0.82f, 0.72f, 1.00f), // tesla: violet
+    Rgb(1.00f, 0.66f, 0.45f), // flame: ember
+    Rgb(1.00f, 0.88f, 0.55f), // mine: gold
+];
+private enum int numTowerKindsView = 6;
+private immutable Rgb[2][numTowerKindsView] branchTint = [
+    [Rgb(0.75f, 0.95f, 0.60f), Rgb(1.00f, 0.80f, 0.50f)], // Longbow, Volley
+    [Rgb(1.00f, 0.70f, 0.55f), Rgb(0.65f,
+                0.65f, 0.75f)], // Cluster, Siege
+    [Rgb(0.60f, 0.95f, 1.00f), Rgb(0.80f, 0.80f, 1.00f)], // Blizzard, Shatter
+    [Rgb(0.65f, 0.75f, 1.00f), Rgb(1.00f,
+                0.90f, 0.55f)], // Storm, Overload
+    [Rgb(1.00f, 0.50f, 0.35f), Rgb(1.00f, 0.75f, 0.30f)], // Inferno, Napalm
+    [Rgb(1, 1, 1), Rgb(1, 1, 1)]
+];
+private immutable Rgb[numTowerKindsView] flatRoof = [
+    Rgb(0.45f, 0.62f, 0.30f), Rgb(0.30f, 0.30f, 0.34f), Rgb(0.45f, 0.75f, 0.95f),
+    Rgb(0.55f, 0.40f, 0.85f), Rgb(0.90f, 0.40f, 0.20f), Rgb(0.85f, 0.70f, 0.25f)
+];
+
+Rgb towerTint(TowerKind k, Stage s) @nogc nothrow pure @safe {
+    immutable b = kindTint[k];
+    final switch (s) {
+    case Stage.lv1:
+        return Rgb(0.85f * b.r + 0.12f, 0.85f * b.g + 0.12f, 0.85f * b.b + 0.12f);
+    case Stage.lv2:
+        return b;
+    case Stage.branchA:
+    case Stage.branchB:
+        immutable a = branchTint[k][s - Stage.branchA];
+        return Rgb(b.r * a.r, b.g * a.g, b.b * a.b);
+    }
+}
+
+Rgb specialTint(SpecialKind k) @nogc nothrow pure @safe {
+    return k == SpecialKind.goldVein ? Rgb(1.0f, 0.80f, 0.25f) : Rgb(0.45f, 0.95f, 1.0f);
 }
