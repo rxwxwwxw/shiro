@@ -35,3 +35,40 @@ __dummy.html
 build/
 bin/
 dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Blender backups and autosaves
+*.blend1
+*.blend2
+*.blend@
+
+# LDC / LLVM intermediates and sanitizer output
+*.ll
+*.bc
+*.s.tmp
+*.profraw
+*.profdata
+*.dSYM/
+core
+core.*
+vgcore.*
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.code-workspace
+.cache/
+compile_commands.json
+
+# Logs and scratch
+*.log
+*.tmp
+tmp/
