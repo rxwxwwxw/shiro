@@ -2,8 +2,11 @@
 // program; strings built at run time (concatenation) live in the StoryState's text heap and are
 // addressed by offset so the heap may grow or compact. Model layer: no SDL, @nogc nothrow.
 //
+// Lists and maps are references to collections owned by the StoryState.
+//
 // Coercions (the same everywhere, so story authors only learn one rule):
-//   nil behaves as 0 / false / "" ; booleans as 0 / 1 ; strings are true when non-empty.
+//   nil behaves as 0 / false / "" ; booleans as 0 / 1 ; strings are true when non-empty;
+//   collections are always true (use len()) and 0 as numbers.
 module story.value;
 
 import core.stdc.stdio : snprintf;
@@ -15,7 +18,10 @@ enum ValueKind : ubyte {
     /// `ptr[0 .. len]`, owned by the program.
     text,
     /// `heap[off .. off + len]` in the owning StoryState.
-    heapText
+    heapText,
+    /// Collection `off` in the owning StoryState (reference semantics: copies share it).
+    list,
+    map
 }
 
 struct Value {
@@ -58,11 +64,15 @@ struct Value {
     bool isText() const @nogc nothrow pure @safe {
         return kind == ValueKind.text || kind == ValueKind.heapText;
     }
+
+    bool isCollection() const @nogc nothrow pure @safe {
+        return kind == ValueKind.list || kind == ValueKind.map;
+    }
 }
 
 static assert(Value.sizeof == 16);
 
-/// Numeric view of a value (strings are 0).
+/// Numeric view of a value (strings and collections are 0).
 double toNumber(const Value v) @nogc nothrow pure @trusted {
     final switch (v.kind) {
     case ValueKind.nil:
@@ -73,6 +83,8 @@ double toNumber(const Value v) @nogc nothrow pure @trusted {
         return v.n;
     case ValueKind.text:
     case ValueKind.heapText:
+    case ValueKind.list:
+    case ValueKind.map:
         return 0;
     }
 }
@@ -88,6 +100,10 @@ bool truthy(const Value v) @nogc nothrow pure @trusted {
     case ValueKind.text:
     case ValueKind.heapText:
         return v.len > 0;
+    case ValueKind.list:
+    case ValueKind.map:
+        // A collection is a reference; test emptiness with len().
+        return true;
     }
 }
 

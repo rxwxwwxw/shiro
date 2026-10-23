@@ -95,6 +95,11 @@ enum Op : ubyte {
     event,
     /// Presentation command (sub: PresentKind) with string args `a`, `b` (-1: none).
     present,
+    /// `container[key] op= value`: expressions `a` (container), `b` (key), `c` (value; -1:
+    /// `true`), sub: AssignOp.
+    store,
+    /// Evaluates expression `a` for its effect (`append(xs, 1)`).
+    exec,
 }
 
 enum AssignOp : ubyte {
@@ -169,6 +174,14 @@ enum XOp : ubyte {
     concat,
     /// Built-in `arg` (Builtin) on the top `argc` values.
     call,
+    /// A new list of the top `argc` values.
+    list,
+    /// A new map of the top `argc` key/value pairs (2 * argc values).
+    map,
+    /// `c[key]` (key on top, container below); nil when absent.
+    index,
+    /// Loop step: element `i` of a list or key `i` of a map (i on top, collection below).
+    iter,
     ret
 }
 
@@ -188,7 +201,12 @@ enum Builtin : ubyte {
     clamp,
     rand,
     len,
-    str
+    str,
+    append,
+    remove,
+    keys,
+    has,
+    range
 }
 
 /// Most values one expression keeps on the stack (the compiler rejects deeper expressions).

@@ -18,8 +18,13 @@ private enum size_t collectAt = 64 * 1024;
 
 // ---- values ----------------------------------------------------------------------------------
 
-/// Display form of `v` (numbers via `numBuf`).
+/// Display form of `v` (numbers and collections are written into `numBuf`, truncated).
 const(char)[] display(const Value v, ref const StoryState st, char[] numBuf) @nogc nothrow @trusted {
+    if (v.isCollection) {
+        size_t n = 0;
+        writeCollection(v, st, numBuf, n, 0);
+        return numBuf[0 .. n];
+    }
     final switch (v.kind) {
     case ValueKind.nil:
         return null;
@@ -30,12 +35,47 @@ const(char)[] display(const Value v, ref const StoryState st, char[] numBuf) @no
     case ValueKind.text:
     case ValueKind.heapText:
         return st.text(v);
+    case ValueKind.list:
+    case ValueKind.map:
+        assert(0);
     }
+}
+
+/// `[1, two]` / `{a: 1}`; nested collections past depth 3 show as `...`.
+private void writeCollection(const Value v, ref const StoryState st, char[] buf, ref size_t n, int depth) @nogc nothrow @trusted {
+    void put(const(char)[] s) {
+        foreach (c; s)
+            if (n < buf.length)
+                buf[n++] = c;
+    }
+
+    if (depth > 3)
+        return put("...");
+    immutable isMap = v.kind == ValueKind.map;
+    put(isMap ? "{" : "[");
+    const ks = st.keys(v);
+    foreach (i, ref e; st.items(v)) {
+        if (i)
+            put(", ");
+        if (isMap) {
+            put(st.text(ks[i]));
+            put(": ");
+        }
+        if (e.isCollection)
+            writeCollection(e, st, buf, n, depth + 1);
+        else {
+            char[32] nb;
+            put(display(e, st, nb[]));
+        }
+    }
+    put(isMap ? "}" : "]");
 }
 
 /// `==` on story values: strings compare by content (and never equal a non-string); everything
 /// else compares as numbers, so nil == 0 == false.
-bool equal(const Value a, const Value b, ref const StoryState st) @nogc nothrow @safe {
+bool equal(const Value a, const Value b, ref const StoryState st) @nogc nothrow @trusted {
+    if (a.isCollection || b.isCollection)
+        return a.kind == b.kind && a.off == b.off;
     if (a.isText || b.isText)
         return a.isText && b.isText && st.text(a) == st.text(b);
     return toNumber(a) == toNumber(b);
@@ -60,7 +100,7 @@ private int order(const Value a, const Value b, ref const StoryState st, out boo
 Value plus(const Value a, const Value b, ref StoryState st) @nogc nothrow @safe {
     if (!a.isText && !b.isText)
         return Value.number(toNumber(a) + toNumber(b));
-    char[32] na, nb;
+    char[128] na, nb;
     return st.makeText(display(a, st, na[]), display(b, st, nb[]));
 }
 
@@ -113,9 +153,42 @@ private Value builtin(Builtin f, Value[] args, ref StoryState st) @nogc nothrow 
             return Value.number(lo + st.rng.below(cast(uint)(hi - lo) + 1));
         }
     case Builtin.len:
-        return Value.number(codePoints(st.text(args[0])));
+        return Value.number(args[0].isCollection ? st.count(args[0]) : codePoints(st.text(args[0])));
+    case Builtin.append:
+        st.append(args[0], args[1]);
+        return args[0];
+    case Builtin.remove:
+        return Value.boolean(st.remove(args[0], args[1]));
+    case Builtin.keys: {
+            auto l = st.newCollection(false);
+            foreach (ref k; st.keys(args[0]))
+                st.append(l, k);
+            return l;
+        }
+    case Builtin.has:
+        if (args[0].kind == ValueKind.map) {
+            foreach (ref k; st.keys(args[0]))
+                if (args[1].isText && st.text(k) == st.text(args[1]))
+                    return Value.boolean(true);
+            return Value.boolean(false);
+        }
+        foreach (ref e; st.items(args[0]))
+            if (equal(e, args[1], st))
+                return Value.boolean(true);
+        return Value.boolean(false);
+    case Builtin.range: {
+            double lo = 0, hi = floorOf(num(0));
+            if (args.length == 2) {
+                lo = floorOf(num(0));
+                hi = floorOf(num(1));
+            }
+            auto l = st.newCollection(false);
+            for (double i = lo; i < hi && st.count(l) < maxCollectionLen; i++)
+                st.append(l, Value.number(i));
+            return l;
+        }
     case Builtin.str: {
-            char[32] b;
+            char[128] b;
             return args[0].isText ? args[0] : st.makeText(display(args[0], st, b[]));
         }
     }
@@ -192,7 +265,7 @@ Value evaluate(ref const StoryProgram p, int pc, ref StoryState st) @nogc nothro
             break;
         case XOp.concat: {
                 const(char)[][16] parts;
-                char[32][16] bufs;
+                char[64][16] bufs;
                 immutable n = x.argc;
                 assert(n <= parts.length);
                 foreach (i; 0 .. n)
@@ -206,6 +279,36 @@ Value evaluate(ref const StoryProgram p, int pc, ref StoryState st) @nogc nothro
                 immutable r = builtin(cast(Builtin)x.arg, stack[sp - n .. sp], st);
                 sp -= n;
                 stack[sp++] = r;
+                break;
+            }
+        case XOp.list: {
+                immutable n = x.argc;
+                auto l = st.newCollection(false);
+                foreach (i; 0 .. n)
+                    st.append(l, stack[sp - n + i]);
+                sp -= n;
+                stack[sp++] = l;
+                break;
+            }
+        case XOp.map: {
+                immutable n = x.argc;
+                auto m = st.newCollection(true);
+                foreach (i; 0 .. n)
+                    st.put(m, stack[sp - 2 * n + 2 * i], stack[sp - 2 * n + 2 * i + 1]);
+                sp -= 2 * n;
+                stack[sp++] = m;
+                break;
+            }
+        case XOp.index:
+            sp--;
+            stack[sp - 1] = st.at(stack[sp - 1], stack[sp]);
+            break;
+        case XOp.iter: {
+                sp--;
+                immutable i = cast(size_t)toNumber(stack[sp]);
+                const c = stack[sp - 1];
+                const src = c.kind == ValueKind.map ? st.keys(c) : st.items(c);
+                stack[sp - 1] = i < src.length ? src[i] : Value.init;
                 break;
             }
         case XOp.ret:
@@ -440,6 +543,24 @@ struct StoryRunner {
                     pc++;
                     break;
                 }
+            case Op.store: {
+                    immutable c = evaluate(*prog, ins.a, st), k = evaluate(*prog, ins.b, st);
+                    Value v = ins.c < 0 ? Value.boolean(true) : evaluate(*prog, ins.c, st);
+                    immutable op = cast(AssignOp)ins.sub;
+                    if (op == AssignOp.clear)
+                        v = Value.boolean(false);
+                    else if (op != AssignOp.set)
+                        v = combine(op, st.at(c, k), v, st);
+                    st.put(c, k, v);
+                    maybeCollect(st);
+                    pc++;
+                    break;
+                }
+            case Op.exec:
+                evaluate(*prog, ins.a, st);
+                maybeCollect(st);
+                pc++;
+                break;
             case Op.present: {
                     StoryEvent e;
                     e.kind = StoryEventKind.present;
@@ -460,17 +581,21 @@ struct StoryRunner {
             return;
         }
         immutable rhs = expr < 0 ? Value.boolean(true) : evaluate(*prog, expr, st);
-        if (op == AssignOp.set) {
-            st.setValue(slot, rhs);
-        } else if (op == AssignOp.add) {
-            st.setValue(slot, plus(st.value(slot), rhs, st));
-        } else {
-            immutable a = toNumber(st.value(slot)), b = toNumber(rhs);
-            immutable r = op == AssignOp.sub ? a - b : (op == AssignOp.mul ? a * b
-                    : (op == AssignOp.div ? a / b : modOf(a, b)));
-            st.setValue(slot, Value.number(r));
-        }
-        if (st.heapUsed > collectAt)
+        st.setValue(slot, op == AssignOp.set ? rhs : combine(op, st.value(slot), rhs, st));
+        maybeCollect(st);
+    }
+
+    private static Value combine(AssignOp op, const Value cur, const Value rhs, ref StoryState st) @nogc nothrow @safe {
+        if (op == AssignOp.add)
+            return plus(cur, rhs, st);
+        immutable a = toNumber(cur), b = toNumber(rhs);
+        return Value.number(op == AssignOp.sub ? a - b : (op == AssignOp.mul ? a * b
+                : (op == AssignOp.div ? a / b : modOf(a, b))));
+    }
+
+    /// Statement boundary: nothing lives on an expression stack, so garbage may go.
+    private static void maybeCollect(ref StoryState st) @nogc nothrow @safe {
+        if (st.heapUsed > collectAt || st.collectionsCreated > 1024)
             st.collect();
     }
 }
@@ -663,7 +788,7 @@ character elder "Bà Lan":
     int errs = 0;
     foreach (ref d; p.diagnostics)
         errs += d.severity == Severity.error;
-    assert(errs == 4);
+    assert(errs == 3);
     char[256] buf;
     assert(p.firstError(buf[])[0 .. 14] == "bad.story:2:10");
 
@@ -689,4 +814,59 @@ character elder "Bà Lan":
     trigger(p, TriggerKind.start, null, st, entry);
     r.start(p, entry, st, ev);
     assert(!r.active && r.faults == 1);
+}
+
+@nogc nothrow unittest {
+    // Lists, maps and for loops (ported from the old interpreter's collections test).
+    immutable text = `
+on start -> collections
+label collections:
+    citizens = [{"name": "Ada", "wounded": true, "health": {"food": 5}}, {name: "Bo", wounded: false, health: {food: 8}}]
+    food = 10
+    for citizen in citizens:
+        if citizen.wounded:
+            food -= 2
+            citizen.health.food -= 1
+        Checking {citizen.name} ({citizen.health["food"]})
+    total = 0
+    for i in range(3):
+        for j in [1, 2]:
+            total += i + j
+    stats = {"z": 2, "a": 1}
+    order = ""
+    for key in stats:
+        order += key
+    for unused in []:
+        total = -100
+    alias = citizens[0]
+    alias.health["food"] += 3
+    append(citizens, {"name": "Cy"})
+    citizens[-1].name = "Cyd"
+    remove(stats, "z")
+    All done: {len(citizens)} citizens, {citizens[-1].name}, {stats}, {has(stats, "a")}, {keys({"q": 1})}
+`;
+    StoryProgram p;
+    StoryState st;
+    immutable err = compileText(p, st, text);
+    if (err != StoryError.none)
+        dumpDiagnostics(p);
+    assert(err == StoryError.none);
+    StoryRunner r;
+    StoryEvents ev;
+    int entry;
+    trigger(p, TriggerKind.start, null, st, entry);
+    r.start(p, entry, st, ev);
+    assert(r.line.text == "Checking Ada (4)");
+    r.advance(st, ev);
+    assert(r.line.text == "Checking Bo (8)");
+    r.advance(st, ev);
+    assert(r.line.text == "All done: 3 citizens, Cyd, {a: 1}, true, [q]");
+    assert(st.named("food") == 8 && st.named("total") == 15);
+    assert(st.text(st.value(st.find("order"))) == "za");
+    const ada = st.at(st.value(st.find("citizens")), Value.number(0));
+    assert(toNumber(st.at(st.at(ada, Value.constText("health")), Value.constText("food"))) == 7);
+    // Garbage collections are reclaimed; live ones survive with their contents.
+    immutable h = st.hash();
+    st.collect();
+    assert(st.hash() == h);
 }

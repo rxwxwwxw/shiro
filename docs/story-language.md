@@ -102,6 +102,29 @@ nil, booleans, numbers (IEEE doubles), strings. nil acts as 0 / false / "". Reco
   `{{` / `}}` are literal braces.
 - Plain names are created on first use. Reading a name nothing ever sets is a warning.
 
+## Lists, maps and loops
+
+```
+citizens = [{"name": "Ada", "health": {"food": 5}}, {name: "Bo", health: {food: 8}}]
+for citizen in citizens:                  # list elements; maps iterate their keys in order
+    citizen.health.food -= 1              # `.key` reads/writes map entries
+    Checking {citizen.name} ({citizen.health["food"]})
+xs = []
+append(xs, 3)                             # a call on its own line runs for its effect
+xs[-1] += 1                               # negative indexes count from the end
+remove(stats, "z")
+for i in range(3):                        # range(n) / range(a, b)
+    total += i
+```
+
+- Lists and maps are references: `alias = citizens[0]` shares the same map.
+- Map keys are strings (`{name: 1}` and `{"name": 1}` are the same); keys keep insertion order.
+- Reading a missing index or key gives nil; assigning a new map key adds it, a list index
+  must already exist (use `append`).
+- Built-ins: `len append remove keys has range`. A collection is always true; test `len(xs) > 0`.
+- Collections display as `[1, two]` / `{a: 1}`. Unreachable ones are reclaimed between statements.
+- `.name` on a record (character, `type`) is a static field; on any other variable it is a map key.
+
 ## Diagnostics
 
 Errors: syntax, unknown label / speaker / field / type, assigning a derived or read-only field,
@@ -110,5 +133,5 @@ too many choices (6), bad ranges. Warnings: labels never used, variables read bu
 
 ## Not carried over from the old `src/script` interpreter
 
-Lists/maps and `for` loops, translation ids, the `.tebc` bytecode cache, video playback,
+Translation ids, the `.tebc` bytecode cache, video playback,
 hard-coded relationship rules (use bounded fields and `=>` derived fields instead).

@@ -19,8 +19,23 @@ private struct SlotInfo {
     double lo = -double.infinity, hi = double.infinity;
 }
 
+/// A list, or a map with insertion-ordered string keys. Malloc'd, owned by the StoryState.
+private struct Coll {
+    Value* vals;
+    /// Map keys (strings), parallel to `vals`; null for lists.
+    Value* keys;
+    uint len, cap;
+    bool isMap, live, marked;
+}
+
+/// Most elements one collection holds.
+enum uint maxCollectionLen = 1 << 20;
+
 struct StoryState {
     private Pool!SlotInfo info;
+    private Pool!Coll colls;
+    private Pool!uint freeColls;
+    private uint newColls;
     private Pool!Value values;
     private TextArena names;
     private char* heap;
@@ -32,6 +47,169 @@ struct StoryState {
 
     ~this() @nogc nothrow @trusted {
         free(heap);
+        foreach (ref c; colls.slice)
+            freeColl(c);
+    }
+
+    private static void freeColl(ref Coll c) @nogc nothrow @trusted {
+        free(c.vals);
+        free(c.keys);
+        c = Coll.init;
+    }
+
+    // ---- collections -----------------------------------------------------------------------
+
+    /// A new empty list or map (nil when memory runs out).
+    Value newCollection(bool isMap) @nogc nothrow @trusted {
+        uint id;
+        if (freeColls.length) {
+            id = freeColls[freeColls.length - 1];
+            freeColls.shrink(freeColls.length - 1);
+        } else {
+            if (!colls.push(Coll.init))
+                return Value.init;
+            id = colls.length - 1;
+        }
+        colls[id] = Coll.init;
+        colls[id].live = true;
+        colls[id].isMap = isMap;
+        newColls++;
+        Value v;
+        v.kind = isMap ? ValueKind.map : ValueKind.list;
+        v.off = id;
+        return v;
+    }
+
+    private inout(Coll)* coll(const Value c) inout return @nogc nothrow @trusted {
+        if (!c.isCollection || c.off >= colls.length || !colls.slice[c.off].live)
+            return null;
+        return &colls.slice[c.off];
+    }
+
+    /// Elements of a list or map (values), empty for anything else.
+    const(Value)[] items(const Value c) const return @nogc nothrow @trusted {
+        auto k = coll(c);
+        return k is null || k.vals is null ? null : k.vals[0 .. k.len];
+    }
+
+    /// Keys of a map, in insertion order.
+    const(Value)[] keys(const Value c) const return @nogc nothrow @trusted {
+        auto k = coll(c);
+        return k is null || k.keys is null ? null : k.keys[0 .. k.len];
+    }
+
+    /// Element count of a collection (0 otherwise).
+    uint count(const Value c) const @nogc nothrow @safe {
+        auto k = coll(c);
+        return k is null ? 0 : k.len;
+    }
+
+    private bool grow(ref Coll k) @nogc nothrow @trusted {
+        if (k.len < k.cap)
+            return true;
+        if (k.cap >= maxCollectionLen)
+            return false;
+        immutable n = k.cap ? k.cap * 2 : 4;
+        auto v = cast(Value*)realloc(k.vals, n * Value.sizeof);
+        if (v is null)
+            return false;
+        k.vals = v;
+        if (k.isMap) {
+            auto ks = cast(Value*)realloc(k.keys, n * Value.sizeof);
+            if (ks is null)
+                return false;
+            k.keys = ks;
+        }
+        k.cap = n;
+        return true;
+    }
+
+    /// Appends to a list; false when `list` is not one or memory runs out.
+    bool append(Value list, Value v) @nogc nothrow @trusted {
+        auto k = coll(list);
+        if (k is null || k.isMap || !grow(*k))
+            return false;
+        k.vals[k.len++] = v;
+        return true;
+    }
+
+    /// Index of `key` in a map, or -1.
+    private int keyIndex(ref const Coll k, const(char)[] key) const @nogc nothrow @trusted {
+        foreach (i; 0 .. k.len)
+            if (text(k.keys[i]) == key)
+                return cast(int)i;
+        return -1;
+    }
+
+    /// `c[key]`: list index (number, negative counts from the end) or map key (string); nil
+    /// when absent.
+    Value at(const Value c, const Value key) const @nogc nothrow @trusted {
+        auto k = coll(c);
+        if (k is null)
+            return Value.init;
+        if (k.isMap) {
+            immutable i = key.isText ? keyIndex(*k, text(key)) : -1;
+            return i < 0 ? Value.init : k.vals[i];
+        }
+        immutable i = listIndex(*k, key);
+        return i < 0 ? Value.init : k.vals[i];
+    }
+
+    private static long listIndex(ref const Coll k, const Value key) @nogc nothrow @safe {
+        if (key.kind != ValueKind.number || key.n != key.n)
+            return -1;
+        long i = cast(long)key.n;
+        if (i < 0)
+            i += k.len;
+        return i >= 0 && i < k.len ? i : -1;
+    }
+
+    /// `c[key] = v`; a new map key is added, a list index must exist. False when it cannot.
+    bool put(Value c, Value key, Value v) @nogc nothrow @trusted {
+        auto k = coll(c);
+        if (k is null)
+            return false;
+        if (!k.isMap) {
+            immutable i = listIndex(*k, key);
+            if (i < 0)
+                return false;
+            k.vals[i] = v;
+            return true;
+        }
+        if (!key.isText)
+            return false;
+        immutable i = keyIndex(*k, text(key));
+        if (i >= 0) {
+            k.vals[i] = v;
+            return true;
+        }
+        if (!grow(*k))
+            return false;
+        k.keys[k.len] = key;
+        k.vals[k.len++] = v;
+        return true;
+    }
+
+    /// Removes list index or map key `key`; false when absent.
+    bool remove(Value c, Value key) @nogc nothrow @trusted {
+        auto k = coll(c);
+        if (k is null)
+            return false;
+        long i = k.isMap ? (key.isText ? keyIndex(*k, text(key)) : -1) : listIndex(*k, key);
+        if (i < 0)
+            return false;
+        foreach (j; cast(uint)i + 1 .. k.len) {
+            k.vals[j - 1] = k.vals[j];
+            if (k.isMap)
+                k.keys[j - 1] = k.keys[j];
+        }
+        k.len--;
+        return true;
+    }
+
+    /// Collections created since the last `collect`.
+    uint collectionsCreated() const @nogc nothrow pure @safe {
+        return newColls;
     }
 
     /// Id of `name`, adding it (value nil) when new; -1 when the name is empty, too long or memory
@@ -175,26 +353,67 @@ struct StoryState {
     /// Compacts the text heap down to the strings variables still hold. Call only where no
     /// heap value lives outside the state (between statements).
     void collect() @nogc nothrow @trusted {
+        // Mark collections reachable from variables, free the rest.
+        foreach (ref c; colls.slice)
+            c.marked = false;
+        foreach (ref v; values.slice)
+            mark(v);
+        foreach (i, ref c; colls.slice)
+            if (c.live && !c.marked) {
+                freeColl(c);
+                freeColls.push(cast(uint)i);
+            }
+        newColls = 0;
         if (heapLen == 0)
             return;
         size_t live = 0;
         foreach (ref v; values.slice)
             if (v.kind == ValueKind.heapText)
                 live += v.len;
+        foreach (ref c; colls.slice)
+            if (c.live)
+                foreach (k; 0 .. c.len) {
+                    if (c.vals[k].kind == ValueKind.heapText)
+                        live += c.vals[k].len;
+                    if (c.isMap && c.keys[k].kind == ValueKind.heapText)
+                        live += c.keys[k].len;
+                }
         auto fresh = cast(char*)malloc(live ? live * 2 : 4096);
         if (fresh is null)
             return;
         size_t at = 0;
+        void move(ref Value v) {
+            if (v.kind != ValueKind.heapText)
+                return;
+            memcpy(fresh + at, heap + v.off, v.len);
+            v.off = at;
+            at += v.len;
+        }
+
         foreach (ref v; values.slice)
-            if (v.kind == ValueKind.heapText) {
-                memcpy(fresh + at, heap + v.off, v.len);
-                v.off = at;
-                at += v.len;
-            }
+            move(v);
+        foreach (ref c; colls.slice)
+            if (c.live)
+                foreach (k; 0 .. c.len) {
+                    move(c.vals[k]);
+                    if (c.isMap)
+                        move(c.keys[k]);
+                }
         free(heap);
         heap = fresh;
         heapLen = at;
         heapCap = live ? live * 2 : 4096;
+    }
+
+    private void mark(const Value v) @nogc nothrow @trusted {
+        if (!v.isCollection || v.off >= colls.length)
+            return;
+        auto c = &colls[v.off];
+        if (!c.live || c.marked)
+            return;
+        c.marked = true;
+        foreach (k; 0 .. c.len)
+            mark(c.vals[k]);
     }
 
     /// Clears every value to nil and reseeds the dice; names and bounds stay (a new playthrough on
@@ -203,7 +422,39 @@ struct StoryState {
         foreach (ref v; values.slice)
             v = Value.init;
         heapLen = 0;
+        foreach (ref c; colls.slice)
+            freeColl(c);
+        colls.clear();
+        freeColls.clear();
+        newColls = 0;
         rng.setSeed(seed);
+    }
+
+    private void hashValue(const Value v, ref ulong h, int depth) const @nogc nothrow @trusted {
+        void mix(uint b) {
+            h = (h ^ b) * 0x100000001b3UL;
+        }
+
+        mix(v.kind == ValueKind.heapText ? ValueKind.text : v.kind);
+        if (v.kind == ValueKind.number) {
+            ulong bits = *cast(const(ulong)*)&v.n;
+            foreach (k; 0 .. 8)
+                mix(cast(uint)(bits >> (k * 8)) & 0xFF);
+        } else if (v.kind == ValueKind.boolean)
+            mix(v.b);
+        else if (v.isCollection) {
+            // Contents, not ids; cycles are cut off by depth.
+            if (depth > 8)
+                return;
+            const ks = keys(v);
+            foreach (i, ref e; items(v)) {
+                if (ks.length)
+                    hashValue(ks[i], h, depth + 1);
+                hashValue(e, h, depth + 1);
+            }
+        } else
+            foreach (c; text(v))
+                mix(c);
     }
 
     /// FNV-1a over every name and value (string contents, not addresses), for determinism checks.
@@ -216,17 +467,7 @@ struct StoryState {
         foreach (i, ref s; info.slice) {
             foreach (c; s.name)
                 mix(c);
-            const v = values.slice[i];
-            mix(v.kind == ValueKind.heapText ? ValueKind.text : v.kind);
-            if (v.kind == ValueKind.number) {
-                ulong bits = *cast(const(ulong)*)&v.n;
-                foreach (k; 0 .. 8)
-                    mix(cast(uint)(bits >> (k * 8)) & 0xFF);
-            } else if (v.kind == ValueKind.boolean)
-                mix(v.b);
-            else
-                foreach (c; text(v))
-                    mix(c);
+            hashValue(values.slice[i], h, 0);
         }
         return h;
     }
@@ -263,6 +504,31 @@ struct StoryState {
     assert(s.value(t).n == 42.5);
     s.setValue(t, Value.boolean(true));
     assert(s.flag(t));
+}
+
+@nogc nothrow @safe unittest {
+    // Lists and maps: reference semantics, ordered keys, unreachable ones freed by collect.
+    StoryState s;
+    immutable a = s.intern("xs"), b = s.intern("m");
+    auto xs = s.newCollection(false);
+    s.setValue(a, xs);
+    assert(s.append(xs, Value.number(1)) && s.append(xs, s.makeText("two")));
+    assert(s.count(xs) == 2 && s.at(xs, Value.number(-1)).isText && s.at(xs, Value.number(5)).isNil);
+    assert(s.put(xs, Value.number(0), Value.number(9)) && s.at(xs, Value.number(0)).n == 9);
+    assert(!s.put(xs, Value.number(7), Value.number(1)));
+    auto m = s.newCollection(true);
+    s.setValue(b, m);
+    assert(s.put(m, Value.constText("z"), Value.number(2)) && s.put(m, Value.constText("a"), xs));
+    assert(s.text(s.keys(m)[0]) == "z" && s.at(m, Value.constText("a")).off == xs.off);
+    immutable h = s.hash();
+    s.newCollection(false); // garbage
+    s.collect();
+    assert(s.count(xs) == 2 && s.text(s.at(xs, Value.number(1))) == "two" && s.hash() == h);
+    assert(s.remove(m, Value.constText("z")) && s.count(m) == 1);
+    s.setValue(a, Value.init);
+    s.setValue(b, Value.init);
+    s.collect();
+    assert(s.count(xs) == 0);
 }
 
 @nogc nothrow @safe unittest {

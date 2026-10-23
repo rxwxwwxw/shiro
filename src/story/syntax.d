@@ -18,9 +18,9 @@ StoryLine:
     Line        <- Stmt Sp Comment? eoi
 
     Stmt        <- Import / TypeDecl / CharDecl / PlaceDecl / VarDecl / On / LabelDecl / SubLabel
-                 / Option / Goto / Call / Return / End / If / Elif / Else
+                 / Option / Goto / Call / Return / End / If / Elif / Else / For
                  / SetStmt / ClearStmt / EventStmt / Show / Hide / SceneCmd / Play / StopCmd / Battle
-                 / Ware / Topic / Prop / Derived / Assign / Say / Narrate
+                 / Ware / Topic / Prop / Derived / Assign / CallStmt / Say / Narrate
 
     Import      <- "import" Sp1 String
     TypeDecl    <- "type" Sp1 Name Sp ":"
@@ -54,6 +54,7 @@ StoryLine:
     If          <- "if" Sp1 Expr Sp ":"
     Elif        <- "elif" Sp1 Expr Sp ":"
     Else        <- "else" Sp ":"
+    For         <- "for" Sp1 Name Sp1 "in" Sp1 Expr Sp ":"
 
     SetStmt     <- "set" Sp1 Path (Sp "=" Sp Expr)?
     ClearStmt   <- "clear" Sp1 Path
@@ -72,7 +73,9 @@ StoryLine:
     PropKey     <~ ("portrait" / "figure" / "sprite" / "home" / "wander" / "image" / "host") !NameChar
     Atom        <- SignedNumber / String / Name
     Derived     <- Name Sp "=>" Sp Expr
-    Assign      <- Path Sp AssignOp Sp Expr Bounds?
+    Assign      <- Lval Sp AssignOp Sp Expr Bounds?
+    Lval        <- Path (Index / Member)*
+    CallStmt    <- CallExpr &(Sp ("#" / eoi))
     AssignOp    <~ "+=" / "-=" / "*=" / "/=" / "%=" / "=" !"="
 
     Say         <- Name (Sp Mood)? Sp ":" Sp Text
@@ -93,9 +96,15 @@ StoryLine:
     AddOp       <~ "+" !"=" / "-" !"=" !">"
     Term        <- Unary (Sp MulOp Sp Unary)*
     MulOp       <~ ("*" / "/" / "%") !"="
-    Unary       <- NegOp Sp Unary / Primary
+    Unary       <- NegOp Sp Unary / Postfix
+    Postfix     <- Primary (Index / Member)*
+    Index       <- "[" Sp Expr Sp "]"
+    Member      <- "." Name
     NegOp       <~ "-"
-    Primary     <- Number / String / Paren / CallExpr / Literal / Path
+    Primary     <- Number / String / ListLit / MapLit / Paren / CallExpr / Literal / Path
+    ListLit     <- "[" Sp (Expr (Sp "," Sp Expr)* (Sp ",")?)? Sp "]"
+    MapLit      <- "{" Sp (Pair (Sp "," Sp Pair)* (Sp ",")?)? Sp "}"
+    Pair        <- (String / Name) Sp ":" Sp Expr
     Paren       <- "(" Sp Expr Sp ")"
     CallExpr    <- Name Sp "(" Sp (Expr (Sp "," Sp Expr)*)? Sp ")"
     Literal     <~ ("true" / "false" / "nil") !NameChar
@@ -104,12 +113,12 @@ StoryLine:
     Name        <~ !Keyword [a-zA-Z_] NameChar*
     Keyword     <- ("import" / "type" / "character" / "place" / "var" / "on" / "label" / "if" / "elif"
                  / "else" / "set" / "clear" / "event" / "show" / "hide" / "scene" / "play" / "stop"
-                 / "battle" / "call" / "return" / "end" / "jump" / "and" / "or" / "not" / "true"
+                 / "battle" / "call" / "return" / "end" / "jump" / "for" / "and" / "or" / "not" / "true"
                  / "false" / "nil" / "in") !NameChar
     NameChar    <- [a-zA-Z0-9_]
     SignedNumber <~ "-"? Number
     Number      <~ [0-9]+ ("." [0-9]+)?
-    String      <~ :doublequote (backslash . / !doublequote .)* :doublequote
+    String      <~ doublequote (backslash . / !doublequote .)* doublequote
     Comment     <- "#" .*
     Sp          <: [ \t]*
     Sp1         <: [ \t]+
@@ -195,6 +204,10 @@ version (unittest) {
     assert(parsesAs("(WASD to walk, E to talk.)", "Narrate"));
     assert(parsesAs(": lower-case narration", "Narrate"));
     assert(parsesAs("set met_elder # trailing comment", "SetStmt"));
+    assert(parsesAs("for c in citizens:", "For"));
+    assert(parsesAs("xs[0].health[\"food\"] -= 1", "Assign"));
+    assert(parsesAs("append(xs, {\"name\": \"Cy\", hp: [1, 2,]})", "CallStmt"));
+    assert(parsesAs("x = xs[i + 1].name", "Assign"));
 }
 
 @nogc nothrow unittest {

@@ -108,11 +108,16 @@ immutable Builtins[] builtinTable = [
     Builtins("ceil", Builtin.ceil, 1, 1), Builtins("round", Builtin.round, 1, 1),
     Builtins("clamp", Builtin.clamp, 3, 3), Builtins("rand", Builtin.rand, 0, 2),
     Builtins("len", Builtin.len, 1, 1), Builtins("str", Builtin.str, 1, 1),
+    Builtins("append", Builtin.append, 2, 2), Builtins("remove", Builtin.remove, 2, 2),
+    Builtins("keys", Builtin.keys, 1, 1), Builtins("has", Builtin.has, 2, 2),
+    Builtins("range", Builtin.range, 1, 2),
 ];
 
 /// Statement kinds that own an indented body.
 bool hasBody(const(char)[] rule) @nogc nothrow pure @safe {
-    foreach (r; ["TypeDecl", "CharDecl", "PlaceDecl", "LabelDecl", "Option", "If", "Elif", "Else"])
+    foreach (r; [
+            "TypeDecl", "CharDecl", "PlaceDecl", "LabelDecl", "Option", "If", "Elif", "Else", "For"
+        ])
         if (r == rule)
             return true;
     return false;
@@ -166,6 +171,7 @@ struct Compiler {
 
     // Scene emission state.
     const(char)[] curLabel, curLineId;
+    uint forCount;
 
     StoryError run(const(char)[] entry) {
         if (!loadFile(entry, -1))
@@ -506,8 +512,9 @@ struct Compiler {
             error(k + 1, 0, "unexpected indented block");
         const kind = ruleName(f);
         if (kind == "Assign") {
-            const path = f.children[0];
-            if (path.children.length != 1 || src(f.children[1]) != "=")
+            const lv = f.children[0];
+            const path = lv.children[0];
+            if (lv.children.length != 1 || path.children.length != 1 || src(f.children[1]) != "=")
                 return error(k, 0, "a field is declared as `name = value`");
             immutable slot = intern(join(prefix, src(path)), k);
             if (slot < 0)
@@ -672,13 +679,49 @@ struct Compiler {
 
     /// Compiles the expression rooted at `t` as a stand-alone entry point.
     int expression(ref const ParseTree t, int line) {
+        return entryOf(line, () { emitExpr(t, line); });
+    }
+
+    /// An expression entry point whose code `body` emits (leaving one value).
+    int entryOf(int line, scope void delegate() @nogc nothrow 
+            body) {
         immutable entry = cast(int)p.xcode_.length;
         depth = maxDepth = 0;
-        emitExpr(t, line);
+        body();
         emitX(XOp.ret);
         if (maxDepth > maxExprStack)
             error(line, 0, "expression too deeply nested");
         return entry;
+    }
+
+    /// Emits `[...]` / `.name` accessors: each indexes the value below it.
+    void emitAccessors(const(ParseTree)[] accs, int line) {
+        foreach (ref a; accs) {
+            if (ruleName(a) == "Index")
+                emitExpr(a.children[0], line);
+            else {
+                // `.name` (Member) or a further Path segment (Name).
+                const name = ruleName(a) == "Name" ? src(a) : src(a.children[0]);
+                emitX(XOp.konst, constant(Value.constText(keep(name))));
+                push(1);
+            }
+            emitX(XOp.index);
+            push(-1);
+        }
+    }
+
+    /// Reads the first `segs` names of Path `t` dynamically: the root variable, then each further
+    /// name as a map key (`citizen.health.food`).
+    void emitDynamicPath(ref const ParseTree t, size_t segs, int line) {
+        const root = src(t.children[0]);
+        if (!resolveRead(root, line, t)) {
+            immutable slot = intern(root, line);
+            if (slot >= 0)
+                markUse(slot, SlotUse.read);
+            emitX(XOp.load, slot);
+            push(1);
+        }
+        emitAccessors(t.children[1 .. segs], line);
     }
 
     void emitExpr(ref const ParseTree t, int line) {
@@ -728,6 +771,31 @@ struct Compiler {
             return;
         case "Paren":
             return emitExpr(t.children[0], line);
+        case "Postfix":
+            emitExpr(t.children[0], line);
+            return emitAccessors(t.children[1 .. $], line);
+        case "ListLit":
+            foreach (ref e; t.children)
+                emitExpr(e, line);
+            if (t.children.length > 255)
+                error(line, colOf(line, t), "list literal too long");
+            emitX(XOp.list, 0, cast(int)t.children.length);
+            return push(1 - cast(int)t.children.length);
+        case "MapLit":
+            foreach (ref pr; t.children) {
+                const key = pr.children[0];
+                if (ruleName(key) == "String")
+                    emitString(key, line);
+                else {
+                    emitX(XOp.konst, constant(Value.constText(keep(src(key)))));
+                    push(1);
+                }
+                emitExpr(pr.children[1], line);
+            }
+            if (t.children.length > 255)
+                error(line, colOf(line, t), "map literal too long");
+            emitX(XOp.map, 0, cast(int)t.children.length);
+            return push(1 - 2 * cast(int)t.children.length);
         case "Number":
             emitX(XOp.konst, constant(Value.number(parseNumber(src(t)))));
             return push(1);
@@ -814,12 +882,22 @@ struct Compiler {
             emitX(XOp.load, slot);
             return push(1);
         }
+        if (!recordish(path) && !recordish(src(t.children[0])))
+            return emitDynamicPath(t, t.children.length, line);
         if (isRecord(path))
             error(line, colOf(line, t), "%.*s is a record; name one of its fields", cast(int)path.length, path.ptr);
         else
             error(line, colOf(line, t), "unknown field %.*s", cast(int)path.length, path.ptr);
         emitX(XOp.konst, constant(Value.init));
         push(1);
+    }
+
+    /// True when `path` is a record or lies inside one (static fields, not map keys).
+    bool recordish(const(char)[] path) {
+        foreach (r; records.slice)
+            if (r.length <= path.length && path[0 .. r.length] == r && (r.length == path.length || path[r.length] == '.'))
+                return true;
+        return false;
     }
 
     /// Emits a read of `path` when it names a derived field, a constant or an existing slot.
@@ -919,9 +997,14 @@ struct Compiler {
             } else if (c == '{') {
                 size_t e = i + 1;
                 char quote = 0;
-                while (e < text.length && (quote || text[e] != '}')) {
+                int nest = 0;
+                while (e < text.length && (quote || nest || text[e] != '}')) {
                     if (text[e] == '"')
                         quote = quote ? 0 : '"';
+                    else if (!quote && text[e] == '{')
+                        nest++;
+                    else if (!quote && text[e] == '}')
+                        nest--;
                     e++;
                 }
                 if (e == text.length) {
@@ -1162,6 +1245,11 @@ struct Compiler {
                 k = menu(k, end, ind);
                 continue;
             }
+            if (kind == "For") {
+                forLoop(k, e, *s);
+                k = e;
+                continue;
+            }
             if (kind == "If" || kind == "Elif") {
                 if (kind == "Elif" && !inChain) {
                     error(k, 0, "elif without if");
@@ -1284,11 +1372,37 @@ struct Compiler {
         case "Assign": {
                 if (child(s, "Bounds"))
                     error(k, 0, "ranges belong in declarations (var, type or character fields)");
-                immutable slot = lvalue(s.children[0], k);
+                const lv = &s.children[0];
+                const path = &lv.children[0];
                 const op = src(s.children[1]);
-                immutable x = expression(s.children[2], k);
                 immutable aop = op == "=" ? AssignOp.set : (op == "+=" ? AssignOp.add : (op == "-="
                         ? AssignOp.sub : (op == "*=" ? AssignOp.mul : (op == "/=" ? AssignOp.div : AssignOp.mod))));
+                if (lv.children.length > 1 || (path.children.length > 1 && st.find(src(*path)) < 0
+                        && !recordish(src(*path)) && !recordish(src(path.children[0])))) {
+                    // A list element or map entry: container[key] op= value.
+                    int cont, key;
+                    if (lv.children.length > 1) {
+                        cont = entryOf(k, () {
+                            emitExpr(*path, k);
+                            emitAccessors(lv.children[1 .. $ - 1], k);
+                        });
+                        const last = &lv.children[$ - 1];
+                        key = ruleName(*last) == "Index" ? expression(last.children[0], k) : entryOf(k, () {
+                            emitX(XOp.konst, constant(Value.constText(keep(src(last.children[0])))));
+                            push(1);
+                        });
+                    } else {
+                        cont = entryOf(k, () { emitDynamicPath(*path, path.children.length - 1, k); });
+                        key = entryOf(k, () {
+                            emitX(XOp.konst, constant(Value.constText(keep(src(path.children[$ - 1])))));
+                            push(1);
+                        });
+                    }
+                    emit(Ins(Op.store, aop, cont, key, expression(s.children[2], k)));
+                    return;
+                }
+                immutable slot = lvalue(*path, k);
+                immutable x = expression(s.children[2], k);
                 if (slot >= 0) {
                     if (aop != AssignOp.set)
                         markUse(slot, SlotUse.read);
@@ -1296,6 +1410,9 @@ struct Compiler {
                 }
                 return;
             }
+        case "CallStmt":
+            emit(Ins(Op.exec, 0, expression(s.children[0], k)));
+            return;
         case "EventStmt": {
                 immutable id = eventId(src(s.children[0]));
                 emit(Ins(Op.event, 0, id, s.children.length > 1 ? expression(s.children[1], k) : -1));
@@ -1324,6 +1441,44 @@ struct Compiler {
         default:
             error(k, 0, "%.*s is not allowed inside a scene", cast(int)kind.length, kind.ptr);
         }
+    }
+
+    /// `for x in xs:` - over list elements or map keys, in order. The collection is evaluated
+    /// once; the loop index lives in a hidden variable, so the body may call and jump freely.
+    void forLoop(int k, int e, ref const ParseTree s) {
+        char[32] nb;
+        immutable n = snprintf(nb.ptr, nb.length, "for#%u", forCount++);
+        immutable listSlot = intern(keep(join(nb[0 .. n], "list")), k);
+        immutable iSlot = intern(keep(join(nb[0 .. n], "i")), k);
+        immutable varSlot = intern(src(s.children[0]), k);
+        if (listSlot < 0 || iSlot < 0 || varSlot < 0)
+            return;
+        markUse(listSlot, SlotUse.read | SlotUse.written);
+        markUse(iSlot, SlotUse.read | SlotUse.written);
+        markUse(varSlot, SlotUse.written);
+        emit(Ins(Op.assign, AssignOp.set, listSlot, expression(s.children[1], k)));
+        immutable zero = constant(Value.number(0)), one = constant(Value.number(1));
+        emit(Ins(Op.assign, AssignOp.set, iSlot, entryOf(k, () { emitX(XOp.konst, zero); push(1); })));
+        immutable top = here();
+        immutable test = emit(Ins(Op.jumpIfNot, 0, entryOf(k, () {
+                    emitX(XOp.load, iSlot);
+                    emitX(XOp.load, listSlot);
+                    push(2);
+                    emitX(XOp.call, Builtin.len, 1);
+                    emitX(XOp.lt);
+                    push(-1);
+                })));
+        emit(Ins(Op.assign, AssignOp.set, varSlot, entryOf(k, () {
+                    emitX(XOp.load, listSlot);
+                    emitX(XOp.load, iSlot);
+                    push(2);
+                    emitX(XOp.iter);
+                    push(-1);
+                })));
+        block(k + 1, e);
+        emit(Ins(Op.assign, AssignOp.add, iSlot, entryOf(k, () { emitX(XOp.konst, one); push(1); })));
+        emit(Ins(Op.jump, 0, top));
+        p.code_[test].b = here();
     }
 
     void addSay(SayRec say) {
