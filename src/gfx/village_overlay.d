@@ -73,7 +73,13 @@ struct VillageOverlay {
         // Prompts in SDL's built-in 8 px font (ASCII; names live in the dialogue box).
         if (!w.talking) {
             immutable near = w.npcInReach();
-            if (near >= 0) {
+            immutable door = w.doorInReach();
+            if (door >= 0) {
+                int dx, dy;
+                cellWorld(w.plan.spot[door], dx, dy);
+                immutable d = worldToScreen(cam, mesh, dx, dy, 0);
+                label(r, d.x, d.y - spriteSpan * zoom * spriteAnchor - 14, "[E] Enter", SDL_FColor(1, 0.95f, 0.7f, 1));
+            } else if (near >= 0) {
                 immutable g = ground(w.npcs[near].body);
                 label(r, g.x, g.y - spriteSpan * zoom * spriteAnchor - 14, "[E] Talk", SDL_FColor(1, 0.95f, 0.7f, 1));
             }

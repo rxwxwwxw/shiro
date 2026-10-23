@@ -204,8 +204,8 @@ struct Bot {
             immutable branch = cast(int)(mix(t.cell, 0x8A4u) & 1);
             if (!nextStage(t.kind, t.stage, branch, next) || g.gold < towerStats(t.kind, next).cost)
                 continue;
-            if (t.stage < bestStage) {
-                bestStage = t.stage;
+            if (tierOf(t.stage) < bestStage) {
+                bestStage = tierOf(t.stage);
                 best = cast(int)i;
             }
         }

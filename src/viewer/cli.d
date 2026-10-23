@@ -52,6 +52,11 @@ struct ViewerConfig {
     /// Open a conversation with this villager (a speaker id) at start, for screenshots.
     char[32] talk = 0;
     bool hasTalk;
+    /// Step into this landmark's building at start (e.g. smithy), for screenshots.
+    char[32] enter = 0;
+    bool hasEnter;
+    /// Menu section open inside the building (0 talk, 1 ask, 2 trade, 3 look, 4 leave), or -1.
+    int section = -1;
 }
 
 immutable string usage = "usage: shiro_viewer [options]
@@ -80,6 +85,8 @@ immutable string usage = "usage: shiro_viewer [options]
   --scene village|td     start in the village hub (default) or straight in tower defense
   --story PATH           story file for the village (default assets/story/village.json)
   --talk ID              open a conversation with villager ID at start (e.g. elder)
+  --enter PLACE          step into PLACE's building at start (e.g. smithy)
+  --section N            menu section inside: 0 talk, 1 ask, 2 trade, 3 look, 4 leave
 ";
 
 private bool parseInt(const(char)[] s, out int v) @nogc nothrow pure @safe {
@@ -276,6 +283,18 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.talk[0 .. val.length] = val[];
             cfg.talk[val.length] = 0;
             cfg.hasTalk = val.length > 0;
+            break;
+        case "--enter":
+            if (val.length + 1 > cfg.enter.length)
+                return R.err(CliError.pathTooLong);
+            cfg.enter[0 .. val.length] = val[];
+            cfg.enter[val.length] = 0;
+            cfg.hasEnter = val.length > 0;
+            break;
+        case "--section":
+            if (!num())
+                return R.err(CliError.badNumber);
+            cfg.section = n;
             break;
         case "--assets":
             if (val.length + 1 > cfg.assets.length)

@@ -127,8 +127,8 @@ struct VillagePlan {
         p.pinned.numSinks = 0;
         p.pinned.sinks[p.pinned.numSinks++] = roadEnd;
         foreach (l; [
-                Landmark.hall, Landmark.market, Landmark.temple, Landmark.smithy, Landmark.home
-            ])
+            Landmark.hall, Landmark.market, Landmark.temple, Landmark.smithy, Landmark.home
+        ])
             if (spot[l] != roadEnd)
                 p.pinned.sinks[p.pinned.numSinks++] = spot[l];
         p.anchors = anchorList;

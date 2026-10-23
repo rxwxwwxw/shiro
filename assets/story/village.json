@@ -16,6 +16,49 @@
     {"speaker": "guard", "home": "gate", "wander": 0}
   ],
 
+  "coins": 40,
+  "interiors": [
+    {"place": "smithy", "title": "Chú Tư's Forge", "image": "smithy", "host": "smith",
+     "look": "Heat rolls off the coals. Hammers, tongs and half-finished blades hang from the rafters, and the anvil still rings faintly.",
+     "wares": [
+       {"name": "Iron caltrops", "desc": "Scatter them on the road; the hungry ones limp.", "price": 12, "flag": "has_caltrops"},
+       {"name": "Whetstone", "desc": "Keeps a tower's bolts keen.", "price": 6, "flag": "has_whetstone"},
+       {"name": "Bronze bell", "desc": "Rung at the gate, it rallies the village.", "price": 25, "flag": "has_bell"}
+     ],
+     "topics": [
+       {"ask": "What are you forging?", "answer": "Arrowheads, mostly. The towers eat them faster than rice."},
+       {"ask": "Where does the iron come from?", "answer": "River sand, washed and smelted. Hard work, honest iron."},
+       {"ask": "Any advice for the road?", "answer": "Build where the road bends. Creeps slow on the turns."}
+     ]},
+    {"place": "temple", "title": "Temple of the Jade Mist", "image": "temple", "host": "priestess",
+     "look": "Incense curls past red lacquer pillars. Offerings of fruit and rice sit before a calm stone face.",
+     "wares": [
+       {"name": "Incense bundle", "desc": "Burn it before a run for the ancestors' favor.", "price": 5, "flag": "has_incense"},
+       {"name": "Jade charm", "desc": "Cool to the touch. Said to turn aside misfortune.", "price": 20, "flag": "has_charm"}
+     ],
+     "topics": [
+       {"ask": "Who do you pray to?", "answer": "To the mist, to the river, and to everyone who stood here before us."},
+       {"ask": "Are the hungry ones spirits?", "answer": "No. Spirits remember. These only want."}
+     ]},
+    {"place": "home", "title": "Ngọc's Family Home", "image": "home", "host": "child",
+     "look": "A low hearth, sleeping mats rolled against the wall, and a wooden buffalo toy left in the middle of the floor.",
+     "wares": [
+       {"name": "Rice cakes", "desc": "Ngọc's mother insists. They are very good.", "price": 2, "flag": "has_ricecake"}
+     ],
+     "topics": [
+       {"ask": "Where are your parents?", "answer": "In the paddies! They come home when the frogs start singing."},
+       {"ask": "Is that your buffalo?", "answer": "His name is Mập. He is the bravest buffalo in Làng Sương."}
+     ]},
+    {"place": "hall", "title": "The Đình Hall", "image": "hall", "host": "elder",
+     "look": "The communal hall. Carved dragons coil along the beams over the long council tables.",
+     "topics": [
+       {"ask": "What is this hall for?", "answer": "Councils, festivals, and arguments about water. Mostly arguments about water."},
+       {"ask": "Who carved the dragons?", "answer": "My grandfather's grandfather. He said they keep the roof dry."}
+     ]},
+    {"place": "market", "title": "Covered Market", "image": "market",
+     "look": "Stalls stand shuttered; baskets are stacked and covered. Everyone is at the walls or in the fields today."}
+  ],
+
   "nodes": [
     {"id": "intro", "text": "Morning mist lifts off the rice terraces of Làng Sương. Drums sound from the đình hall: the river road to the west has gone quiet, and quiet roads are never good news.", "next": "intro2"},
     {"id": "intro2", "text": "Bà Lan, the village elder, waits for you in the plaza. (WASD to walk, E to talk.)"},

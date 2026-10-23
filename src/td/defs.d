@@ -78,15 +78,53 @@ enum DamageType : ubyte {
     fire
 }
 
-/// Upgrade stage: Lv1, Lv2, then one of two specializations.
+/// Upgrade stage: Lv1 to Lv3 in a line, then one of two specializations with four levels each,
+/// so a tower takes six upgrades to max out. The mine never branches and climbs path A.
 enum Stage : ubyte {
     lv1,
     lv2,
-    branchA,
-    branchB
+    lv3,
+    a1,
+    a2,
+    a3,
+    a4,
+    b1,
+    b2,
+    b3,
+    b4
 }
 
-enum int numStages = 4;
+enum int numStages = 11;
+/// Levels before the branch, levels on a branch, and the highest level.
+enum int linearLevels = 3, branchLevels = 4, maxTier = linearLevels + branchLevels;
+
+/// Level of a stage, 1 .. maxTier.
+int tierOf(Stage s) @nogc nothrow pure @safe {
+    return s < Stage.a1 ? s + 1 : linearLevels + 1 + (s - Stage.a1) % branchLevels;
+}
+
+/// Specialization of a stage: -1 before the branch, else 0 (A) or 1 (B).
+int branchOf(Stage s) @nogc nothrow pure @safe {
+    return s < Stage.a1 ? -1 : (s - Stage.a1) / branchLevels;
+}
+
+/// Stage at level `tier` (1 .. maxTier) on `branch` (ignored below the branch).
+Stage stageAt(int branch, int tier) @nogc nothrow pure @safe {
+    assert(tier >= 1 && tier <= maxTier);
+    if (tier <= linearLevels)
+        return cast(Stage)(tier - 1);
+    return cast(Stage)(Stage.a1 + (branch ? branchLevels : 0) + tier - linearLevels - 1);
+}
+
+@nogc nothrow pure @safe unittest {
+    assert(tierOf(Stage.lv1) == 1 && tierOf(Stage.lv3) == 3 && tierOf(Stage.a1) == 4);
+    assert(tierOf(Stage.b4) == maxTier && tierOf(Stage.a4) == maxTier);
+    assert(branchOf(Stage.lv3) == -1 && branchOf(Stage.a3) == 0 && branchOf(Stage.b1) == 1);
+    foreach (s; 0 .. numStages) {
+        immutable st = cast(Stage)s;
+        assert(stageAt(branchOf(st) < 0 ? 0 : branchOf(st), tierOf(st)) == st);
+    }
+}
 
 struct TowerStats {
     string name;
@@ -130,8 +168,9 @@ struct TowerStats {
 
 enum int burnEvery = 10;
 
-/// Stats by kind and stage. Branch stages of the mine are unused (cost 0).
-immutable TowerStats[numStages][numTowerKinds] towerTable = [
+/// Hand-tuned anchors by kind: Lv1, Lv2 and the first level of each branch. The other stages grow
+/// from these (see `grownTable`). The mine has no branches.
+private immutable TowerStats[4][numTowerKinds] anchorTable = [
     // Arrow: cheap, fast, single target.
     [
         TowerStats("Arrow", 50, 2800, 20, 12, DamageType.physical, 320, blurb: "Fast single shots"),
@@ -190,34 +229,109 @@ immutable TowerStats[numStages][numTowerKinds] towerTable = [
     ]
 ];
 
+/// `b` made stronger by `steps` levels: more damage, range and effect for more gold, renamed.
+private TowerStats grow(TowerStats b, int steps, string name, string blurb) @nogc nothrow pure @safe {
+    static int pct(int v, int p, int n) {
+        long x = v;
+        foreach (i; 0 .. n)
+            x = x * p / 100;
+        return cast(int)x;
+    }
+
+    static int cap(int v, int c) {
+        return v > c ? c : v;
+    }
+
+    if (steps == 0)
+        return b;
+    TowerStats t = b;
+    t.name = name;
+    t.cost = pct(b.cost, 130, steps);
+    t.range = pct(b.range, 104, steps);
+    t.cooldown = pct(b.cooldown, 95, steps);
+    if (t.cooldown < 4 && b.cooldown > 0)
+        t.cooldown = 4;
+    t.damage = pct(b.damage, 135, steps);
+    t.splash = pct(b.splash, 104, steps);
+    if (b.slowPct)
+        t.slowPct = cap(b.slowPct + 3 * steps, 75);
+    t.slowTicks = pct(b.slowTicks, 110, steps);
+    if (b.chains)
+        t.chains = b.chains + steps;
+    t.burnDmg = pct(b.burnDmg, 135, steps);
+    if (b.targets > 1)
+        t.targets = b.targets + steps / 2;
+    if (b.pierce)
+        t.pierce = cap(b.pierce + 5 * steps, 90);
+    if (b.shred)
+        t.shred = b.shred + 2 * steps;
+    if (b.chillPct)
+        t.chillPct = b.chillPct + 5 * steps;
+    if (b.stunTicks)
+        t.stunTicks = b.stunTicks + 5 * steps;
+    if (b.bomblets)
+        t.bomblets = b.bomblets + (steps + 1) / 2;
+    t.patchTicks = pct(b.patchTicks, 115, steps);
+    t.income = pct(b.income, 140, steps);
+    t.blurb = blurb;
+    return t;
+}
+
+private enum string[maxTier + 1] roman = ["", "", " II", " III", " IV", " V", " VI", " VII"];
+/// Names and blurbs of grown stages, joined at compile time.
+private enum string numbered(string base, int n) = base ~ roman[n];
+private enum string stronger(string blurb) = blurb ~ ", stronger";
+
+private TowerStats[numStages][numTowerKinds] grownTable() @nogc nothrow pure @safe {
+    TowerStats[numStages][numTowerKinds] r;
+    static foreach (k; 0 .. numTowerKinds) {
+        r[k][Stage.lv1] = anchorTable[k][0];
+        r[k][Stage.lv2] = anchorTable[k][1];
+        r[k][Stage.lv3] = grow(anchorTable[k][1], 1, numbered!(anchorTable[k][0].name, 3),
+                stronger!(anchorTable[k][1].blurb));
+        static foreach (i; 0 .. branchLevels) {
+            static if (k == TowerKind.mine) {
+                r[k][stageAt(0, linearLevels + 1 + i)] = grow(anchorTable[k][1], 2 + i,
+                        numbered!(anchorTable[k][0].name, 4 + i), stronger!(anchorTable[k][1].blurb));
+            } else {
+                static foreach (br; 0 .. 2)
+                    r[k][stageAt(br, linearLevels + 1 + i)] = grow(anchorTable[k][2 + br], i,
+                            numbered!(anchorTable[k][2 + br].name, 1 + i), stronger!(anchorTable[k][2 + br].blurb));
+            }
+        }
+    }
+    return r;
+}
+
+/// Stats by kind and stage. Path B of the mine is unused (cost 0).
+immutable TowerStats[numStages][numTowerKinds] towerTable = grownTable();
+
 ref immutable(TowerStats) towerStats(TowerKind k, Stage s) @nogc nothrow pure @safe {
     return towerTable[k][s];
 }
 
-/// Stage an upgrade from `s` leads to (`branch` 0 = A, 1 = B, only read at Lv2), or false at max.
+/// True where an upgrade picks a specialization (Lv3 of a combat tower).
+bool isBranchPoint(TowerKind k, Stage s) @nogc nothrow pure @safe {
+    return s == Stage.lv3 && k != TowerKind.mine;
+}
+
+/// Stage an upgrade from `s` leads to (`branch` 0 = A, 1 = B, only read at the branch point), or
+/// false at max.
 bool nextStage(TowerKind k, Stage s, int branch, out Stage next) @nogc nothrow pure @safe {
-    final switch (s) {
-    case Stage.lv1:
-        next = Stage.lv2;
-        return true;
-    case Stage.lv2:
-        if (k == TowerKind.mine)
-            return false;
-        next = branch == 0 ? Stage.branchA : Stage.branchB;
-        return true;
-    case Stage.branchA:
-    case Stage.branchB:
+    immutable tier = tierOf(s);
+    if (tier >= maxTier)
         return false;
-    }
+    immutable br = branchOf(s) >= 0 ? branchOf(s) : (k == TowerKind.mine ? 0 : branch != 0);
+    next = stageAt(br, tier + 1);
+    return true;
 }
 
 /// Gold spent to bring a tower to stage `s` (its build cost plus the upgrades on the way).
 int investedIn(TowerKind k, Stage s) @nogc nothrow pure @safe {
-    int g = towerTable[k][Stage.lv1].cost;
-    if (s >= Stage.lv2)
-        g += towerTable[k][Stage.lv2].cost;
-    if (s >= Stage.branchA)
-        g += towerTable[k][s].cost;
+    immutable br = branchOf(s) < 0 ? 0 : branchOf(s);
+    int g = 0;
+    foreach (t; 1 .. tierOf(s) + 1)
+        g += towerTable[k][stageAt(br, t)].cost;
     return g;
 }
 
@@ -227,17 +341,37 @@ enum int sellPercent = 70;
 @nogc nothrow pure @safe unittest {
     Stage n;
     assert(nextStage(TowerKind.arrow, Stage.lv1, 0, n) && n == Stage.lv2);
-    assert(nextStage(TowerKind.arrow, Stage.lv2, 1, n) && n == Stage.branchB);
-    assert(!nextStage(TowerKind.arrow, Stage.branchA, 0, n));
-    assert(!nextStage(TowerKind.mine, Stage.lv2, 0, n));
-    assert(investedIn(TowerKind.cannon, Stage.branchB) == 80 + 90 + 190);
-    // Every combat stage can hurt something and costs something.
+    assert(nextStage(TowerKind.arrow, Stage.lv2, 1, n) && n == Stage.lv3);
+    assert(nextStage(TowerKind.arrow, Stage.lv3, 1, n) && n == Stage.b1);
+    assert(nextStage(TowerKind.arrow, Stage.a1, 1, n) && n == Stage.a2); // the branch sticks
+    assert(!nextStage(TowerKind.arrow, Stage.a4, 0, n) && !nextStage(TowerKind.arrow, Stage.b4, 0, n));
+    assert(nextStage(TowerKind.mine, Stage.lv3, 1, n) && n == Stage.a1);
+    assert(isBranchPoint(TowerKind.frost, Stage.lv3) && !isBranchPoint(TowerKind.mine, Stage.lv3));
+    // Six upgrades from Lv1 to the top of either branch.
+    foreach (k; 0 .. numTowerKinds)
+        foreach (br; 0 .. 2) {
+            Stage s = Stage.lv1, up;
+            int ups = 0;
+            while (nextStage(cast(TowerKind)k, s, br, up)) {
+                s = up;
+                ++ups;
+            }
+            assert(ups == 6 && tierOf(s) == maxTier);
+        }
+    assert(investedIn(TowerKind.cannon, Stage.b1) == 80 + 90 + towerTable[1][Stage.lv3].cost + 190);
+    assert(investedIn(TowerKind.cannon, Stage.lv1) == 80);
+    // Every combat stage can hurt something and costs something; each level beats the last.
     foreach (k; 0 .. numCombatKinds)
         foreach (s; 0 .. numStages) {
             immutable t = towerTable[k][s];
             assert(t.cost > 0 && t.range > 0 && t.cooldown > 0 && t.damage > 0, t.name);
+            if (tierOf(cast(Stage)s) > linearLevels + 1)
+                assert(t.damage > towerTable[k][s - 1].damage && t.range > towerTable[k][s - 1].range);
         }
-    assert(towerTable[TowerKind.mine][0].income > 0);
+    foreach (s; 0 .. Stage.a4 + 1)
+        assert(towerTable[TowerKind.mine][s].income > 0);
+    assert(towerTable[TowerKind.arrow][Stage.a4].name == "Longbow IV");
+    assert(towerTable[TowerKind.mine][Stage.a4].name == "Mine VII");
 }
 
 enum CreepKind : ubyte {

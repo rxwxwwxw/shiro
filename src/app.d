@@ -22,12 +22,14 @@ import gfx.sdl_handles;
 import gfx.td_overlay;
 import gfx.village_overlay;
 import gui.dialogue_ui;
+import gui.interior_ui;
+import village.interior : Interiors;
 import gui.nuklear_ui;
 import story.dialogue;
 import story.state;
 import story.td_link;
 import td.bot;
-import td.defs : cellUnits, halfHex, rowUnits, Stage, ticksPerSecond, TowerKind;
+import td.defs : cellUnits, halfHex, isBranchPoint, rowUnits, ticksPerSecond, TowerKind;
 import td.game;
 import village.plan;
 import village.walk;
@@ -92,6 +94,8 @@ private struct Viewer {
     VillageQueue villageQueue;
     VillageOverlay villageOverlay;
     DialogueUi dialogue;
+    Interiors interiors;
+    InteriorUi interior;
     /// Village props (assets/models/village.glb) and walk sheets (assets/sprites/villagers.png), optional.
     GlbModel villageGlb;
     Texture villagerSprites;
@@ -100,6 +104,8 @@ private struct Viewer {
     /// What the story granted the current tower defense run.
     RunModifiers runMods;
     double villageAcc = 0;
+    /// Seconds until ctrl-skip advances the next line.
+    float skipTimer = 0;
     /// Movement keys held: up, down, left, right.
     bool[4] held;
     bool running = true;
@@ -275,8 +281,8 @@ private struct Viewer {
         const t = game.towerAt(state.selCol, state.selRow);
         if (t is null)
             return;
-        // U only goes to Lv2; Q / E pick the specialization from there.
-        if ((branch < 0) != (t.stage == Stage.lv1))
+        // U climbs a level; Q / E pick the specialization at the branch point.
+        if ((branch < 0) == isBranchPoint(t.kind, t.stage))
             return;
         gameQueue.push(GameCommand(CommandType.upgrade, t.kind, cast(ubyte)(branch < 0 ? 0 : branch), t.col, t.row));
     }
@@ -442,6 +448,8 @@ private struct Viewer {
                     cast(int)dialogueDb.errorContext.length, dialogueDb.errorContext.ptr);
             return false;
         }
+        if (interiors.load(storyFile.text, dialogueDb, storyState) < 0)
+            fprintf(stderr, "story: an interior names an unknown place or host\n");
         return true;
     }
 
@@ -462,6 +470,7 @@ private struct Viewer {
         fx.reset(game);
         rebuildMesh(sdl);
         world.setup(&plan, &walk, &dialogueDb, &storyState, villageSeed);
+        world.setInteriors(&interiors);
         if (world.loadNpcs(storyFile.text) < 0)
             fprintf(stderr, "story: an NPC names an unknown speaker or home\n");
         if (returning)
@@ -526,6 +535,14 @@ private struct Viewer {
             immutable dx = (held[3] ? 1 : 0) - (held[2] ? 1 : 0), dy = (held[1] ? 1 : 0) - (held[0] ? 1 : 0);
             villageQueue.push(VillageCommand(VillageCmd.move, cast(byte)dx, cast(byte)dy));
         }
+        // Ctrl held rushes through the conversation, stopping at the next choice.
+        skipTimer -= cast(float)dt;
+        if (world.talking && (SDL_GetModState() & SDL_KMOD_CTRL) && skipTimer <= 0) {
+            skipTimer = 0.06f;
+            dialogue.skipTyping(world);
+            if (world.talk.choiceCount == 0)
+                villageQueue.push(VillageCommand(VillageCmd.advance));
+        }
         VillageCommand c;
         while (villageQueue.pop(c))
             world.apply(c);
@@ -562,9 +579,13 @@ private struct Viewer {
             break;
         case SDLK_A, SDLK_LEFT:
             held[2] = down;
+            if (down && world.inside >= 0 && !world.talking)
+                interior.cycle(world, -1);
             break;
         case SDLK_D, SDLK_RIGHT:
             held[3] = down;
+            if (down && world.inside >= 0 && !world.talking)
+                interior.cycle(world, 1);
             break;
         case SDLK_E, SDLK_SPACE, SDLK_RETURN:
             if (!down || e.key.repeat)
@@ -584,8 +605,14 @@ private struct Viewer {
                 break;
             if (world.talking)
                 villageQueue.push(VillageCommand(VillageCmd.cancel));
+            else if (world.inside >= 0)
+                villageQueue.push(VillageCommand(VillageCmd.leave));
             else
                 queue.push(CommandKind.quit);
+            break;
+        case SDLK_TAB:
+            if (down && world.inside >= 0 && !world.talking)
+                interior.cycle(world, (SDL_GetModState() & SDL_KMOD_SHIFT) ? -1 : 1);
             break;
         case SDLK_EQUALS:
             if (down)
@@ -616,6 +643,15 @@ private struct Viewer {
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 held[] = false;
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                // A click continues the conversation; with choices up, the buttons take it.
+                if (e.button.button != SDL_BUTTON_LEFT || !world.talking)
+                    break;
+                if (dialogue.typing(world))
+                    dialogue.skipTyping(world);
+                else if (world.talk.choiceCount == 0)
+                    villageQueue.push(VillageCommand(VillageCmd.advance));
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
                 if (!uiCapturing) {
@@ -953,6 +989,14 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 fprintf(stderr, "--talk: nobody called %s answers\n", cfg.talk.ptr);
             v.followPlayer(1);
         }
+        if (cfg.hasEnter) {
+            import core.stdc.string : strlen;
+
+            if (!v.world.enterNow(cfg.enter[0 .. strlen(cfg.enter.ptr)]))
+                fprintf(stderr, "--enter: %s has no building to enter\n", cfg.enter.ptr);
+            if (cfg.section >= 0 && cfg.section <= Section.max)
+                v.interior.show(v.world, cast(Section)cfg.section);
+        }
     } else
         v.regenerate(ren.handle);
     if (v.session.tiles.rect.cols == 0)
@@ -1021,6 +1065,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         if (v.scene == Scene.village) {
             if (cfg.hasScreenshot)
                 v.dialogue.skipTyping(v.world);
+            v.interior.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
             v.dialogue.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
         }
 
@@ -1079,9 +1124,14 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         immutable drawStart = SDL_GetPerformanceCounter();
         immutable shift = v.state.animateWater ? cast(float)(drawStart / freq * sparkleDrift) : 0.0f;
         immutable wave = v.state.animateWater ? cast(float)(drawStart / freq * 2.2) : float.nan;
-        v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
+        // Inside a building the backdrop covers the whole view, so the map is not drawn.
+        immutable indoors = v.scene == Scene.village && v.world.inside >= 0;
+        if (!indoors)
+            v.renderer.draw(ren.handle, v.texture.handle, v.caustic.handle, v.overview, v.mesh, v.camera, shift, wave);
         immutable drawMs = cast(float)((SDL_GetPerformanceCounter() - drawStart) / freq * 1000.0);
-        if (v.scene == Scene.village)
+        if (indoors)
+            v.interior.drawScene(ren.handle, v.world, v.dialogueDb, viewW, viewH);
+        else if (v.scene == Scene.village)
             v.villageOverlay.draw(ren.handle, v.world, v.dialogueDb, v.camera, v.mesh,
                     cast(float)(v.villageAcc * ticksPerSecond), cast(float)(drawStart / freq));
         else

@@ -420,7 +420,7 @@ struct Game {
             if (!t.alive)
                 continue;
             put(i);
-            put(t.kind * 4 + t.stage);
+            put(t.kind * numStages + t.stage);
             put(t.cooldown);
         }
         foreach (i; 0 .. maxProjectiles)
@@ -1140,9 +1140,12 @@ version (unittest) {
     assert(g.gold == before - towerStats(TowerKind.arrow, Stage.lv2).cost);
     g.gold = 1000;
     up.arg = 1;
-    assert(g.apply(up) == CommandError.none && g.towerAt(5, 2).stage == Stage.branchB);
-    assert(g.apply(up) == CommandError.maxed);
-    immutable invested = investedIn(TowerKind.arrow, Stage.branchB);
+    assert(g.apply(up) == CommandError.none && g.towerAt(5, 2).stage == Stage.lv3);
+    assert(g.apply(up) == CommandError.none && g.towerAt(5, 2).stage == Stage.b1);
+    foreach (i; 0 .. 3)
+        assert(g.apply(up) == CommandError.none);
+    assert(g.towerAt(5, 2).stage == Stage.b4 && g.apply(up) == CommandError.maxed);
+    immutable invested = investedIn(TowerKind.arrow, Stage.b4);
     assert(g.towerAt(5, 2).invested == invested);
     immutable gold0 = g.gold;
     assert(g.apply(GameCommand(CommandType.sell, TowerKind.arrow, 0, 5, 2)) == CommandError.none);
@@ -1342,7 +1345,8 @@ version (unittest) {
         g.status = GameStatus.wave;
         g.gold = 10_000;
         assert(g.apply(placeCmd(k, 8, 2)) == CommandError.none);
-        assert(g.apply(GameCommand(CommandType.upgrade, k, 0, 8, 2)) == CommandError.none);
+        foreach (i; 0 .. 2)
+            assert(g.apply(GameCommand(CommandType.upgrade, k, 0, 8, 2)) == CommandError.none);
         assert(g.apply(GameCommand(CommandType.upgrade, k, branch, 8, 2)) == CommandError.none);
         g.towers_[0].cooldown = 0;
     }
@@ -1396,7 +1400,7 @@ version (unittest) {
         foreach (ref p; g.projectiles)
             bomblets += p.alive && p.kind == ProjKind.bomblet && p.age == 1;
     }
-    assert(bomblets == towerStats(TowerKind.cannon, Stage.branchA).bomblets);
+    assert(bomblets == towerStats(TowerKind.cannon, Stage.a1).bomblets);
 }
 
 @nogc nothrow unittest {

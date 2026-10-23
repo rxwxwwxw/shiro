@@ -17,8 +17,8 @@ import village.world;
 private enum float typeRate = 70;
 private enum int artSlots = 48;
 
-/// Portraits and figures by file name, each tried once (a missing file stays missing).
-private struct ArtCache {
+/// Portraits, figures and backdrops by file name, each tried once (a missing file stays missing).
+struct ArtCache {
     private char[96][artSlots] keys;
     private ubyte[artSlots] keyLen;
     private Texture[artSlots] tex;
@@ -231,7 +231,8 @@ struct DialogueUi {
         if (choices == 0) {
             shiro_nk_use_font(ctx, 0);
             nk_layout_row_dynamic(ctx, 18, 1);
-            nk_label_colored(ctx, "[Space] continue    [Esc] leave", NK_TEXT_LEFT, nk_color(200, 170, 120, 255));
+            nk_label_colored(ctx, "[Space / click] continue    [Ctrl] skip    [Esc] leave",
+                    NK_TEXT_LEFT, nk_color(200, 170, 120, 255));
         }
     }
 }

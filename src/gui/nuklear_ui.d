@@ -189,7 +189,8 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
     }
     const cur = &towerStats(t.kind, t.stage);
     nk_layout_row_dynamic(ctx, 18, 1);
-    labelf(ctx, "%.*s  (%.*s)", cast(int)cur.name.length, cur.name.ptr, cast(int)cur.blurb.length, cur.blurb.ptr);
+    labelf(ctx, "%.*s  Lv %d/%d  (%.*s)", cast(int)cur.name.length, cur.name.ptr, tierOf(t.stage),
+            maxTier, cast(int)cur.blurb.length, cur.blurb.ptr);
     nk_layout_row_dynamic(ctx, 16, 1);
     statsLine(ctx, g, *t);
     if (t.kind != TowerKind.mine) {
@@ -202,8 +203,8 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
     void upgradeButton(int branch, Stage next) {
         const ns = &towerStats(t.kind, next);
         char[64] buf = void;
-        snprintf(buf.ptr, buf.length, "%s %.*s (%d)", t.stage == Stage.lv1 ? "Upgrade U:".ptr
-                : (branch == 0 ? "Q:".ptr : "E:".ptr), cast(int)ns.name.length, ns.name.ptr, ns.cost);
+        snprintf(buf.ptr, buf.length, "%s %.*s (%d)", !isBranchPoint(t.kind, t.stage)
+                ? "Upgrade U:".ptr : (branch == 0 ? "Q:".ptr : "E:".ptr), cast(int)ns.name.length, ns.name.ptr, ns.cost);
         immutable poor = g.gold < ns.cost;
         if (poor)
             nk_widget_disable_begin(ctx);
@@ -215,7 +216,7 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
 
     Stage next;
     if (nextStage(t.kind, t.stage, 0, next)) {
-        if (t.stage == Stage.lv1) {
+        if (!isBranchPoint(t.kind, t.stage)) {
             nk_layout_row_dynamic(ctx, 24, 1);
             upgradeButton(0, next);
         } else {

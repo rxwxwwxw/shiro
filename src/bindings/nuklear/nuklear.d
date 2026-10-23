@@ -40,9 +40,11 @@ enum : nk_flags {
 enum : nk_flags {
     NK_TEXT_ALIGN_LEFT = 0x01,
     NK_TEXT_ALIGN_CENTERED = 0x02,
+    NK_TEXT_ALIGN_RIGHT = 0x04,
     NK_TEXT_ALIGN_MIDDLE = 0x10,
     NK_TEXT_LEFT = NK_TEXT_ALIGN_MIDDLE | NK_TEXT_ALIGN_LEFT,
     NK_TEXT_CENTERED = NK_TEXT_ALIGN_MIDDLE | NK_TEXT_ALIGN_CENTERED,
+    NK_TEXT_RIGHT = NK_TEXT_ALIGN_MIDDLE | NK_TEXT_ALIGN_RIGHT,
 }
 
 nk_context* shiro_nk_init(SDL_Window* win, SDL_Renderer* renderer, float scale, const(char)* textFont);

@@ -73,6 +73,7 @@ enum ubyte SDL_BUTTON_MIDDLE = 2;
 enum ubyte SDL_BUTTON_RIGHT = 3;
 
 enum SDL_Keymod SDL_KMOD_SHIFT = 0x0003;
+enum SDL_Keymod SDL_KMOD_CTRL = 0x00c0;
 
 enum : SDL_Keycode {
     SDLK_BACKSPACE = 0x08,
@@ -217,6 +218,7 @@ SDL_Surface* SDL_LoadPNG_IO(SDL_IOStream* src, bool closeio);
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);
 void SDL_DestroyTexture(SDL_Texture* texture);
 const(char)* SDL_GetBasePath();
+SDL_Keymod SDL_GetModState();
 SDL_Surface* SDL_LoadPNG(const(char)* file);
 SDL_Surface* SDL_ConvertSurface(SDL_Surface* surface, uint format);
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, uint format, int access, int w, int h);

@@ -19,7 +19,8 @@ import core.stdc.string : memcpy;
 import gfx.camera : Camera;
 import gfx.glb;
 import gfx.iso;
-import td.defs : numTowerKinds, SpecialKind, Stage, TowerKind;
+import td.defs : branchOf, linearLevels, maxTier, numStages, numTowerKinds, SpecialKind, Stage,
+    stageAt, tierOf, TowerKind;
 import td.game : Game, Tower;
 import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames,
     numVillageProps, towerVariant, VillageProp, villagePropNames;
@@ -1129,7 +1130,7 @@ struct MapMesh {
     }
 
     private static float towerScale(Stage s) @nogc nothrow pure @safe {
-        return s == Stage.lv1 ? 0.82f : (s == Stage.lv2 ? 0.95f : 1.08f);
+        return 0.82f + 0.045f * (tierOf(s) - 1);
     }
 
     /// True if a tower or special tile was drawn (the cell's decoration is then skipped).
@@ -1138,11 +1139,15 @@ struct MapMesh {
             return false;
         if (const t = game_.towerAt(col, row)) {
             immutable angle0 = dirAngle[(col * 7 + row * 3) % 6];
-            // Own models carry their colors; the stage shows as size and a light wash of the tint.
-            immutable v = t.stage == Stage.branchA ? 1 : (t.stage == Stage.branchB ? 2 : 0);
-            ref const MeshRef own = ts.td[t.kind][ts.td[t.kind][v].valid ? v : 0];
+            // Own models carry their colors and a look per stage (the nearest lower stage on the
+            // same path stands in for a missing one); size and a light tint wash add to it.
+            immutable br = branchOf(t.stage) < 0 ? 0 : branchOf(t.stage);
+            int tier = tierOf(t.stage);
+            while (tier > 1 && !ts.td[t.kind][stageAt(br, tier)].valid)
+                --tier;
+            ref const MeshRef own = ts.td[t.kind][stageAt(br, tier)];
             if (own.valid) {
-                immutable sc = t.stage == Stage.lv1 ? 0.88f : 1.0f;
+                immutable sc = 0.9f + 0.02f * (tierOf(t.stage) - 1);
                 immutable k = towerTint(t.kind, t.stage);
                 immutable wash = Rgb(0.8f + 0.2f * k.r, 0.8f + 0.2f * k.g, 0.8f + 0.2f * k.b);
                 addShadow(own, cx, cz, baseY, sc);
@@ -1157,7 +1162,7 @@ struct MapMesh {
             addModel(m, cx, baseY, cz, angle, sc, 1, tint, lvl);
             if (t.kind == TowerKind.arrow && t.stage != Stage.lv1)
                 addModel(ts.towerTop, cx, baseY, cz, angle, sc, 1, tint, lvl);
-            if (t.kind == TowerKind.tesla && t.stage >= Stage.branchA)
+            if (t.kind == TowerKind.tesla && branchOf(t.stage) >= 0)
                 addModel(ts.towerTop, cx, baseY + 0.25f, cz, angle, sc * 0.8f, 1, tint, lvl);
             return true;
         }
@@ -1432,7 +1437,7 @@ private struct TexSet {
     MeshRef[6] hills;
     MeshRef fort, henge, watchtower, mine, rockGold, rockLey;
     /// td-towers.glb per tower kind: levels 1-2, branch A, branch B.
-    MeshRef[3][numTowerKinds] td;
+    MeshRef[numStages][numTowerKinds] td;
     /// Per VillageProp: village.glb when loaded, else the hex-terrain stand-in (may be empty).
     MeshRef[numVillageProps] village;
 
@@ -1445,15 +1450,23 @@ private struct TexSet {
     }
 
     void resolveTowers(ref const GlbModel g) @nogc nothrow @trusted {
-        static immutable string[3][numTowerKinds] names = [
-            ["td_arrow", "td_arrow_a", "td_arrow_b"], ["td_cannon", "td_cannon_a", "td_cannon_b"],
-            ["td_frost", "td_frost_a", "td_frost_b"], ["td_tesla", "td_tesla_a", "td_tesla_b"],
-            ["td_flame", "td_flame_a", "td_flame_b"], ["td_mine", "", ""]
+        // Node td_<kind>_<stage>: td_arrow_1 .. td_arrow_3, then td_arrow_a1 .. a4 and b1 .. b4.
+        static immutable string[numTowerKinds] kinds = [
+            "arrow", "cannon", "frost", "tesla", "flame", "mine"
+        ];
+        static immutable string[numStages] stages = [
+            "1", "2", "3", "a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"
         ];
         foreach (k; 0 .. numTowerKinds)
-            foreach (v; 0 .. 3)
-                if (names[k][v].length)
-                    g.find(names[k][v], td[k][v]);
+            foreach (s; 0 .. numStages) {
+                char[32] buf = void;
+                immutable n = 3 + kinds[k].length + 1 + stages[s].length;
+                buf[0 .. 3] = "td_";
+                buf[3 .. 3 + kinds[k].length] = kinds[k];
+                buf[3 + kinds[k].length] = '_';
+                buf[4 + kinds[k].length .. n] = stages[s];
+                g.find(buf[0 .. n], td[k][s]);
+            }
     }
 
     void resolve(ref const GlbModel g) @nogc nothrow @trusted {
@@ -1530,16 +1543,16 @@ private immutable Rgb[numTowerKindsView] flatRoof = [
 
 Rgb towerTint(TowerKind k, Stage s) @nogc nothrow pure @safe {
     immutable b = kindTint[k];
-    final switch (s) {
-    case Stage.lv1:
-        return Rgb(0.85f * b.r + 0.12f, 0.85f * b.g + 0.12f, 0.85f * b.b + 0.12f);
-    case Stage.lv2:
-        return b;
-    case Stage.branchA:
-    case Stage.branchB:
-        immutable a = branchTint[k][s - Stage.branchA];
-        return Rgb(b.r * a.r, b.g * a.g, b.b * a.b);
+    immutable br = branchOf(s);
+    if (br < 0) {
+        // Pale at Lv1, the kind's own color by Lv3.
+        immutable f = 0.12f * (linearLevels - 1 - s) / (linearLevels - 1);
+        return Rgb((1 - f) * b.r + f, (1 - f) * b.g + f, (1 - f) * b.b + f);
     }
+    // The specialization's tint deepens a little with each level on the branch.
+    immutable a = branchTint[k][br];
+    immutable d = 1.0f - 0.05f * (tierOf(s) - linearLevels - 1);
+    return Rgb(b.r * a.r * d, b.g * a.g * d, b.b * a.b * d);
 }
 
 Rgb specialTint(SpecialKind k) @nogc nothrow pure @safe {

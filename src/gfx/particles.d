@@ -227,9 +227,9 @@ struct Particles {
             break;
         case EventKind.chain:
             immutable startH = e.b == 0 ? towerTop + 0.2f : 0.35f;
-            bolt(ex, ey, startH, e.x2, e.y2, 0.35f, e.a == Stage.branchB);
-            burst(e.x2, e.y2, 0.35f, e.a == Stage.branchB ? 18 : 7, 900, 2, 0.25f, 0.14f, 0.02f,
-                    SDL_FColor(0.85f, 0.85f, 1, 1), SDL_FColor(0.4f, 0.4f, 1, 0), true, -8);
+            bolt(ex, ey, startH, e.x2, e.y2, 0.35f, branchOf(cast(Stage)e.a) == 1);
+            burst(e.x2, e.y2, 0.35f, branchOf(cast(Stage)e.a) == 1 ? 18 : 7, 900, 2, 0.25f, 0.14f,
+                    0.02f, SDL_FColor(0.85f, 0.85f, 1, 1), SDL_FColor(0.4f, 0.4f, 1, 0), true, -8);
             if (e.b == 0)
                 burst(ex, ey, towerTop + 0.2f, 4, 300, 1, 0.2f, 0.3f, 0.05f, SDL_FColor(0.8f,
                         0.8f, 1, 1), clear, true);
@@ -352,7 +352,7 @@ struct Particles {
             return;
         dx /= dl;
         dy /= dl;
-        immutable wide = e.a == Stage.branchA ? 0.75f : 0.45f;
+        immutable wide = branchOf(cast(Stage)e.a) == 0 ? 0.75f : 0.45f;
         immutable range = e.value;
         foreach (k; 0 .. scaled(14)) {
             immutable side = spread(wide);

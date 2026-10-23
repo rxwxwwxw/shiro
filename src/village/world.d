@@ -11,6 +11,7 @@ import story.events : TriggerKind;
 import story.script : StoryEvents;
 import story.state;
 import story.td_link : varGateOpen;
+import village.interior;
 import td.defs : cellUnits, cellWorld, halfHex, rowUnits;
 import village.plan;
 import village.walk;
@@ -66,7 +67,15 @@ enum VillageCmd : ubyte {
     /// Pick visible choice `arg`.
     choose,
     /// Close the conversation.
-    cancel
+    cancel,
+    /// Step into the building whose zone the player stands in.
+    enter,
+    /// Step back out of the building.
+    leave,
+    /// Talk to whoever keeps the building.
+    talkHost,
+    /// Buy ware `arg` of the building.
+    buy
 }
 
 struct VillageCommand {
@@ -107,7 +116,11 @@ enum VillageEventKind : ubyte {
     /// The player walked out of the west gate with the gate open: start tower defense.
     leaveWest,
     /// The player tried the west gate while it is shut.
-    gateLocked
+    gateLocked,
+    /// The player stepped into a building (arg: Landmark).
+    enterBuilding,
+    /// The player stepped back out (arg: Landmark).
+    leaveBuilding
 }
 
 struct VillageEvent {
@@ -150,6 +163,10 @@ struct VillageWorld {
     private int moveX, moveY;
     /// Landmark zone the player stands in, or -1.
     private int zone_ = -1;
+    private const(Interiors)* interiors_;
+    /// Landmark whose building the player is inside, or -1.
+    private int inside_ = -1;
+    private BuyResult lastBuy_;
     private Random rng;
     private uint tick_;
     private VillageEvent[16] events_;
@@ -174,7 +191,14 @@ struct VillageWorld {
         moveX = moveY = 0;
         numEvents_ = 0;
         storyEvents.clear();
+        inside_ = -1;
+        lastBuy_ = BuyResult.none;
         placePlayerAtGate();
+    }
+
+    /// Building interiors (optional; must outlive the world). Without them nothing can be entered.
+    void setInteriors(const(Interiors)* ins) @nogc nothrow @safe {
+        interiors_ = ins;
     }
 
     /// Adds a villager living at landmark `home`; false when full or the speaker is unknown.
@@ -228,6 +252,7 @@ struct VillageWorld {
         talk_.stop();
         talkNpc_ = -1;
         moveX = moveY = 0;
+        inside_ = -1;
         placePlayerAtGate();
         int node;
         if (db_.trigger(TriggerKind.returned, won ? "won" : "lost", *story_, storyEvents, node) >= 0)
@@ -282,6 +307,52 @@ struct VillageWorld {
         return zone_;
     }
 
+    /// Landmark whose building the player is inside, or -1.
+    int inside() const @nogc nothrow pure @safe {
+        return inside_;
+    }
+
+    /// The interior the player is in, or null.
+    const(Interior)* interior() const return @nogc nothrow pure @safe {
+        return interiors_ is null ? null : interiors_.of(inside_);
+    }
+
+    /// The building whose door the player stands at (a Landmark), or -1.
+    int doorInReach() const @nogc nothrow pure @safe {
+        return inside_ < 0 && interiors_ !is null && interiors_.of(zone_) !is null ? zone_ : -1;
+    }
+
+    /// Outcome of the last purchase (cleared on entering a building).
+    BuyResult lastBuy() const @nogc nothrow pure @safe {
+        return lastBuy_;
+    }
+
+    /// Whether the player has bought `w`.
+    bool owns(ref const Ware w) const @nogc nothrow @safe {
+        return w.flag >= 0 && story_.flag(w.flag);
+    }
+
+    /// The player's money.
+    int coins() const @nogc nothrow @safe {
+        return interiors_ is null || interiors_.coinsVar < 0 ? 0 : story_.get(interiors_.coinsVar);
+    }
+
+    /// Puts the player in front of landmark `name` and steps inside (screenshots, scripted
+    /// scenes); false when it has no interior.
+    bool enterNow(const(char)[] name) @nogc nothrow @trusted {
+        immutable l = landmarkByName(name);
+        if (l < 0 || interiors_ is null || interiors_.of(l) is null)
+            return false;
+        talk_.stop();
+        talkNpc_ = -1;
+        cellWorld(plan_.spot[l], player.x, player.y);
+        player.px = player.x;
+        player.py = player.y;
+        zone_ = l;
+        apply(VillageCommand(VillageCmd.enter));
+        return inside_ == l;
+    }
+
     ref const(VillagePlan) plan() const return @nogc nothrow pure @trusted {
         return *plan_;
     }
@@ -313,6 +384,10 @@ struct VillageWorld {
             if (talk_.active) {
                 talk_.advance(*story_, storyEvents);
                 endTalkIfDone();
+            } else if (inside_ >= 0) {
+                apply(VillageCommand(VillageCmd.talkHost));
+            } else if (doorInReach() >= 0) {
+                apply(VillageCommand(VillageCmd.enter));
             } else {
                 immutable n = npcInReach();
                 if (n < 0)
@@ -347,6 +422,40 @@ struct VillageWorld {
                 endTalkIfDone();
             }
             break;
+        case VillageCmd.enter: {
+                immutable d = doorInReach();
+                if (talk_.active || d < 0)
+                    break;
+                inside_ = d;
+                lastBuy_ = BuyResult.none;
+                moveX = moveY = 0;
+                push(VillageEventKind.enterBuilding, d);
+                break;
+            }
+        case VillageCmd.leave:
+            if (talk_.active || inside_ < 0)
+                break;
+            push(VillageEventKind.leaveBuilding, inside_);
+            inside_ = -1;
+            break;
+        case VillageCmd.talkHost: {
+                const it = interior();
+                if (talk_.active || it is null || it.host < 0)
+                    break;
+                int node;
+                if (db_.trigger(TriggerKind.talk, db_.speakers[it.host].id, *story_, storyEvents, node) < 0 || node < 0)
+                    break;
+                int npc = -1;
+                foreach (i, ref n; npcs_[0 .. numNpcs_])
+                    if (n.speaker == it.host)
+                        npc = cast(int)i;
+                openTalk(node, npc);
+                break;
+            }
+        case VillageCmd.buy:
+            if (!talk_.active && inside_ >= 0)
+                lastBuy_ = interiors_.buy(inside_, c.arg, *story_);
+            break;
         }
     }
 
@@ -367,7 +476,7 @@ struct VillageWorld {
             n.body.px = n.body.x;
             n.body.py = n.body.y;
         }
-        if (talk_.active)
+        if (talk_.active || inside_ >= 0)
             return;
         if (moveX != 0 || moveY != 0)
             movePlayer();
@@ -397,6 +506,7 @@ struct VillageWorld {
         mix(player.x);
         mix(player.y);
         mix(talk_.nodeIndex);
+        mix(inside_);
         foreach (ref n; npcs_[0 .. numNpcs_]) {
             mix(n.body.x);
             mix(n.body.y);
@@ -602,6 +712,35 @@ version (unittest) {
         w.arriveFromTd(true);
         assert(w.talking && w.talk.line.id == "back");
         return w.hash();
+    }
+
+    // Into the smithy: the smith talks from behind the counter, wares cost coins, and out again.
+    {
+        Interiors ins;
+        assert(ins.load(`{"coins": 5, "interiors": [{"place": "plaza", "title": "Square", "host": "elder",
+            "wares": [{"name": "Tea", "price": 3, "flag": "has_tea"}]}]}`, db, st) == 1);
+        VillageWorld w;
+        w.setup(&plan, &walk, &db, &st, 11);
+        w.setInteriors(&ins);
+        assert(w.loadNpcs(testStory) == 2);
+        assert(!w.enterNow("smithy") && w.enterNow("plaza"));
+        assert(w.inside == Landmark.plaza && w.interior.title == "Square");
+        immutable p0 = w.player;
+        w.apply(VillageCommand(VillageCmd.move, 1, 0));
+        w.step();
+        assert(w.player.x == p0.x);
+        w.apply(VillageCommand(VillageCmd.buy, 0, 0, 0));
+        assert(w.lastBuy == BuyResult.bought && w.coins == 2);
+        w.apply(VillageCommand(VillageCmd.buy, 0, 0, 0));
+        assert(w.lastBuy == BuyResult.owned);
+        w.apply(VillageCommand(VillageCmd.interact));
+        assert(w.talking && w.talkNpc == 0 && w.talk.line.id == "hello");
+        w.apply(VillageCommand(VillageCmd.leave));
+        assert(w.inside == Landmark.plaza);
+        w.apply(VillageCommand(VillageCmd.cancel));
+        w.apply(VillageCommand(VillageCmd.leave));
+        assert(w.inside == -1 && w.doorInReach == Landmark.plaza);
+        st.reset();
     }
 
     VillageWorld a, b;
