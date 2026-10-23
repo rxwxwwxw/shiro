@@ -17,7 +17,8 @@ mixin(grammar(`
 StoryLine:
     Line        <- Stmt Sp Comment? eoi
 
-    Stmt        <- Import / TypeDecl / CharDecl / PlaceDecl / VarDecl / On / LabelDecl / SubLabel
+    Stmt        <- Import / TypeDecl / CharDecl / PlaceDecl / VarDecl / DataDecl / DefDecl / On
+                 / LabelDecl / SubLabel
                  / Option / Goto / Call / Return / End / If / Elif / Else / For
                  / SetStmt / ClearStmt / EventStmt / Show / Hide / SceneCmd / Play / StopCmd / Battle
                  / Ware / Topic / Prop / Derived / Assign / CallStmt / Say / Narrate
@@ -30,6 +31,8 @@ StoryLine:
     VarType     <- ":" Sp Name
     VarInit     <- "=" Sp Expr
     Bounds      <- Sp1 "in" Sp1 SignedNumber Sp ".." Sp SignedNumber
+    DataDecl    <- "data" Sp1 Name Sp "=" Sp Expr
+    DefDecl     <- "def" Sp1 Name Sp "(" Sp (Name (Sp "," Sp Name)*)? Sp ")" Sp ":"
 
     On          <- "on" Sp1 TrigKind (Sp1 OnTarget)? (Sp1 Once)? (Sp1 "if" Sp1 Expr)? Sp (OnGoto / OnBlock)
     TrigKind    <~ ("start" / "talk" / "enter" / "return") !NameChar
@@ -49,7 +52,7 @@ StoryLine:
     Goto        <- ("->" / "jump" Sp1) Sp Target
     Call        <- "call" Sp1 Target
     Target      <~ "."? [a-zA-Z_] NameChar* ("." [a-zA-Z_] NameChar*)*
-    Return      <- "return" !NameChar
+    Return      <- "return" !NameChar (Sp1 Expr)?
     End         <- "end" !NameChar
     If          <- "if" Sp1 Expr Sp ":"
     Elif        <- "elif" Sp1 Expr Sp ":"
@@ -101,17 +104,19 @@ StoryLine:
     Index       <- "[" Sp Expr Sp "]"
     Member      <- "." Name
     NegOp       <~ "-"
-    Primary     <- Number / String / ListLit / MapLit / Paren / CallExpr / Literal / Path
+    Primary     <- Number / String / Symbol / ListLit / MapLit / Paren / CallExpr / Literal / Path
     ListLit     <- "[" Sp (Expr (Sp "," Sp Expr)* (Sp ",")?)? Sp "]"
     MapLit      <- "{" Sp (Pair (Sp "," Sp Pair)* (Sp ",")?)? Sp "}"
     Pair        <- (String / Name) Sp ":" Sp Expr
     Paren       <- "(" Sp Expr Sp ")"
     CallExpr    <- Name Sp "(" Sp (Expr (Sp "," Sp Expr)*)? Sp ")"
     Literal     <~ ("true" / "false" / "nil") !NameChar
+    Symbol      <~ ":" [a-zA-Z_] NameChar*
     Path        <- Name ("." Name)*
 
     Name        <~ !Keyword [a-zA-Z_] NameChar*
-    Keyword     <- ("import" / "type" / "character" / "place" / "var" / "on" / "label" / "if" / "elif"
+    Keyword     <- ("import" / "type" / "character" / "place" / "var" / "data" / "def" / "on" / "label"
+                 / "if" / "elif"
                  / "else" / "set" / "clear" / "event" / "show" / "hide" / "scene" / "play" / "stop"
                  / "battle" / "call" / "return" / "end" / "jump" / "for" / "and" / "or" / "not" / "true"
                  / "false" / "nil" / "in") !NameChar
@@ -208,13 +213,19 @@ version (unittest) {
     assert(parsesAs("xs[0].health[\"food\"] -= 1", "Assign"));
     assert(parsesAs("append(xs, {\"name\": \"Cy\", hp: [1, 2,]})", "CallStmt"));
     assert(parsesAs("x = xs[i + 1].name", "Assign"));
+    assert(parsesAs("data towers = [{id: :arrow, cost: 50}]", "DataDecl"));
+    assert(parsesAs("def grow(base, steps):", "DefDecl"));
+    assert(parsesAs("def roll():", "DefDecl"));
+    assert(parsesAs("return base * 2", "Return"));
+    assert(parsesAs("if who == :elder:", "If"));
+    assert(parsesAs("x = grow(t, 2).cost", "Assign"));
 }
 
 @nogc nothrow unittest {
     // Typos are errors, not narration: lines starting with a lower-case word must parse as code.
     foreach (bad; [
         "sett met_elder", "set", "-> ", "x = ", "x == 3", "if a", "on dance -> x", "var x",
-        "elder (worried: hi", "* ", "x = 1 +", "label :"
+        "elder (worried: hi", "* ", "x = 1 +", "label :", "def f(a,):", "data x", "x = :", "x = : a"
     ]) {
         ParseContext ctx;
         auto r = parseLine(ctx, bad);

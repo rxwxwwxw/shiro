@@ -21,7 +21,9 @@ enum ValueKind : ubyte {
     heapText,
     /// Collection `off` in the owning StoryState (reference semantics: copies share it).
     list,
-    map
+    map,
+    /// `:name`: symbol `off` interned in the owning StoryState. Symbols equal only themselves.
+    symbol
 }
 
 struct Value {
@@ -68,6 +70,10 @@ struct Value {
     bool isCollection() const @nogc nothrow pure @safe {
         return kind == ValueKind.list || kind == ValueKind.map;
     }
+
+    bool isSymbol() const @nogc nothrow pure @safe {
+        return kind == ValueKind.symbol;
+    }
 }
 
 static assert(Value.sizeof == 16);
@@ -85,6 +91,7 @@ double toNumber(const Value v) @nogc nothrow pure @trusted {
     case ValueKind.heapText:
     case ValueKind.list:
     case ValueKind.map:
+    case ValueKind.symbol:
         return 0;
     }
 }
@@ -104,6 +111,8 @@ bool truthy(const Value v) @nogc nothrow pure @trusted {
     case ValueKind.map:
         // A collection is a reference; test emptiness with len().
         return true;
+    case ValueKind.symbol:
+        return true;
     }
 }
 
@@ -116,6 +125,30 @@ int toInt(double d) @nogc nothrow pure @safe {
     if (d <= int.min)
         return int.min;
     return cast(int)d;
+}
+
+/// Exact integer view for game data: true and `out` set when `v` is a whole number in int range
+/// (booleans count as 0 / 1, nil as 0); false for fractions, NaN, strings and collections.
+bool toIntExact(const Value v, out int r) @nogc nothrow pure @trusted {
+    if (v.kind == ValueKind.nil)
+        return true;
+    if (v.kind == ValueKind.boolean) {
+        r = v.b;
+        return true;
+    }
+    if (v.kind != ValueKind.number || v.n != v.n || v.n < int.min || v.n > int.max)
+        return false;
+    r = cast(int)v.n;
+    return r == v.n;
+}
+
+@nogc nothrow pure @safe unittest {
+    int r;
+    assert(toIntExact(Value.number(42), r) && r == 42);
+    assert(toIntExact(Value.number(-7), r) && r == -7);
+    assert(toIntExact(Value.init, r) && r == 0 && toIntExact(Value.boolean(true), r) && r == 1);
+    assert(!toIntExact(Value.number(2.5), r) && !toIntExact(Value.number(1e10), r));
+    assert(!toIntExact(Value.number(double.nan), r) && !toIntExact(Value.constText("3"), r));
 }
 
 @nogc nothrow pure @safe unittest {

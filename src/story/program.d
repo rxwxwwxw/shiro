@@ -5,6 +5,7 @@
 module story.program;
 
 import story.pool;
+import story.state : StoryState;
 import story.value;
 
 enum StoryError : ubyte {
@@ -87,7 +88,8 @@ enum Op : ubyte {
     /// Jumps to `b` unless expression `a` is true.
     jumpIfNot,
     call,
-    /// Returns from a `call`; ends the conversation when nothing called.
+    /// Returns from a `call`; ends the conversation when nothing called. In a function, returns
+    /// the value of expression `a` (-1: nil).
     ret,
     /// Variable `a` (sub: AssignOp) with expression `b` (-1: `true`).
     assign,
@@ -182,7 +184,28 @@ enum XOp : ubyte {
     index,
     /// Loop step: element `i` of a list or key `i` of a map (i on top, collection below).
     iter,
+    /// Story function `arg` (a `def`) on the top `argc` values.
+    callFn,
+    /// Host function `arg` (StoryProgram.hosts) on the top `argc` values.
+    callHost,
     ret
+}
+
+/// A `def`: its code, and the hidden variables holding its parameters (first `argc`) and locals.
+struct StoryFn {
+    const(char)[] name;
+    int entry = -1;
+    ubyte argc;
+    uint localStart, localLen;
+}
+
+/// A function the game offers to scripts (`tower_hp(t)`). Hosts must not run story code.
+alias HostCallback = Value function(scope const(Value)[] args, ref StoryState st, void* ctx) @nogc nothrow;
+
+struct HostFn {
+    const(char)[] name;
+    ubyte minArgs, maxArgs;
+    HostCallback fn;
 }
 
 struct XIns {
@@ -290,9 +313,16 @@ struct StoryProgram {
     package Pool!(const(char)[]) labelNames_;
     package Pool!int labelPcs_;
     package Pool!Diagnostic diags_;
+    package Pool!StoryFn fns_;
+    package Pool!int fnLocals_;
+    package Pool!int dataSlots_;
+    /// Host functions the program was compiled against (owned by the game, outliving the program).
+    package const(HostFn)[] hosts_;
     package TextArena text_;
     /// Scene code setting every declared starting value, or -1.
     package int init_ = -1;
+    /// Passed to every host function call (the game sets it before running story code).
+    void* hostContext;
 
     @disable this(this);
 
@@ -351,6 +381,31 @@ struct StoryProgram {
 
     const(Diagnostic)[] diagnostics() const return @nogc nothrow @safe {
         return diags_.slice;
+    }
+
+    const(StoryFn)[] functions() const return @nogc nothrow @safe {
+        return fns_.slice;
+    }
+
+    /// Hidden variables of function `f` (parameters first).
+    const(int)[] locals(ref const StoryFn f) const return @nogc nothrow @safe {
+        return fnLocals_.slice[f.localStart .. f.localStart + f.localLen];
+    }
+
+    int findFunction(const(char)[] name) const @nogc nothrow @safe {
+        foreach (i, ref f; fns_.slice)
+            if (f.name == name)
+                return cast(int)i;
+        return -1;
+    }
+
+    const(HostFn)[] hosts() const return @nogc nothrow @safe {
+        return hosts_;
+    }
+
+    /// Variables declared with `data` (read-only, frozen by `initialize`).
+    const(int)[] dataSlots() const return @nogc nothrow @safe {
+        return dataSlots_.slice;
     }
 
     int initEntry() const @nogc nothrow pure @safe {
@@ -415,6 +470,10 @@ struct StoryProgram {
         labelNames_.clear();
         labelPcs_.clear();
         diags_.clear();
+        fns_.clear();
+        fnLocals_.clear();
+        dataSlots_.clear();
+        hosts_ = null;
         text_.clear();
         init_ = -1;
     }

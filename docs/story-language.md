@@ -8,7 +8,9 @@ Code: grammar `src/story/syntax.d` (npegged, generated at compile time), compile
 
 ## Files and blocks
 
-- One statement per line; indentation (spaces, tab = 4) makes blocks, like Python.
+- One statement per line; indentation (spaces, tab = 4) makes blocks, like Python. A code line left
+  open (an unclosed `( [ {`, or ending in `,` or `:-`) that does not parse alone continues on the
+  following lines, so big literals can span lines.
 - `# comment` lines are ignored. Trailing `# ...` works on statement lines, **not** on text lines
   (text runs to end of line).
 - `import "other.story"` (top level, path relative to the importing file). Each file loads once.
@@ -38,7 +40,19 @@ place smithy "Chú Tư's Forge":              # building interior (landmark id)
 
 var coins = 40                              # starting value (run on every new game)
 var town: Town                              # a record variable
+data towers = [                             # read-only game data (frozen after initialize)
+    {id: :arrow, cost: 50},
+]
+
+def grow(base, steps):                      # a function: computes and assigns, returns a value
+    t = {cost: base.cost}                   # assigned names are locals (unless declared var/data)
+    for i in range(steps):
+        t.cost = floor(t.cost * 130 / 100)
+    return t
 ```
+
+Functions may not show lines, choices, jump to labels or raise events, and may not be recursive.
+Game-provided functions (host functions) are called like built-ins.
 
 `elder.name` reads the display name.
 
@@ -91,7 +105,8 @@ A lower-case first word must be a statement or a speaker, so typos are errors, n
 
 ## Values and expressions
 
-nil, booleans, numbers (IEEE doubles), strings. nil acts as 0 / false / "". Records are static:
+nil, booleans, numbers (IEEE doubles), strings, symbols (`:arrow`; equal only to themselves,
+display as their name, usable as map keys). nil acts as 0 / false / "". Records are static:
 `elder.bond.trust` is one variable slot, resolved at compile time.
 
 - `or and not` (also `!`), `== != < <= > >=`, `+ - * / %` (floored modulo), unary `-`, parens.

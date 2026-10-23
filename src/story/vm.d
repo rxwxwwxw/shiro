@@ -35,6 +35,8 @@ const(char)[] display(const Value v, ref const StoryState st, char[] numBuf) @no
     case ValueKind.text:
     case ValueKind.heapText:
         return st.text(v);
+    case ValueKind.symbol:
+        return st.symbolName(v);
     case ValueKind.list:
     case ValueKind.map:
         assert(0);
@@ -74,7 +76,7 @@ private void writeCollection(const Value v, ref const StoryState st, char[] buf,
 /// `==` on story values: strings compare by content (and never equal a non-string); everything
 /// else compares as numbers, so nil == 0 == false.
 bool equal(const Value a, const Value b, ref const StoryState st) @nogc nothrow @trusted {
-    if (a.isCollection || b.isCollection)
+    if (a.isCollection || b.isCollection || a.isSymbol || b.isSymbol)
         return a.kind == b.kind && a.off == b.off;
     if (a.isText || b.isText)
         return a.isText && b.isText && st.text(a) == st.text(b);
@@ -84,8 +86,8 @@ bool equal(const Value a, const Value b, ref const StoryState st) @nogc nothrow 
 /// Ordering: strings lexicographically (bytes), everything else as numbers. NaN orders nowhere.
 private int order(const Value a, const Value b, ref const StoryState st, out bool unordered) @nogc nothrow @safe {
     unordered = false;
-    if (a.isText && b.isText) {
-        const x = st.text(a), y = st.text(b);
+    if ((a.isText && b.isText) || (a.isSymbol && b.isSymbol)) {
+        const x = st.keyText(a), y = st.keyText(b);
         return x < y ? -1 : (x > y ? 1 : 0);
     }
     immutable x = toNumber(a), y = toNumber(b);
@@ -194,6 +196,84 @@ private Value builtin(Builtin f, Value[] args, ref StoryState st) @nogc nothrow 
     }
 }
 
+/// `cur op= rhs`.
+private Value combine(AssignOp op, const Value cur, const Value rhs, ref StoryState st) @nogc nothrow @safe {
+    if (op == AssignOp.add)
+        return plus(cur, rhs, st);
+    immutable a = toNumber(cur), b = toNumber(rhs);
+    return Value.number(op == AssignOp.sub ? a - b : (op == AssignOp.mul ? a * b : (op == AssignOp.div
+            ? a / b : modOf(a, b))));
+}
+
+/// An `assign` instruction (no garbage collection: callers decide when that is safe).
+private void doAssign(ref const StoryProgram p, AssignOp op, int slot, int expr, ref StoryState st) @nogc nothrow @safe {
+    if (op == AssignOp.clear) {
+        st.setValue(slot, Value.boolean(false));
+        return;
+    }
+    immutable rhs = expr < 0 ? Value.boolean(true) : evaluate(p, expr, st);
+    st.setValue(slot, op == AssignOp.set ? rhs : combine(op, st.value(slot), rhs, st));
+}
+
+/// A `store` instruction: `container[key] op= value`.
+private void doStore(ref const StoryProgram p, ref const Ins ins, ref StoryState st) @nogc nothrow @safe {
+    immutable c = evaluate(p, ins.a, st), k = evaluate(p, ins.b, st);
+    Value v = ins.c < 0 ? Value.boolean(true) : evaluate(p, ins.c, st);
+    immutable op = cast(AssignOp)ins.sub;
+    if (op == AssignOp.clear)
+        v = Value.boolean(false);
+    else if (op != AssignOp.set)
+        v = combine(op, st.at(c, k), v, st);
+    st.put(c, k, v);
+}
+
+/// Runs `def` number `fn` on `args` and returns its result (nil when it falls off its end or
+/// runs away). Functions only compute and assign; the compiler keeps lines, menus, jumps to
+/// labels and events out of them, and rejects recursion, so nesting is bounded by the number of
+/// functions. No garbage is collected here: the caller's expression stack is live.
+Value callFunction(ref const StoryProgram p, int fn, scope const(Value)[] args, ref StoryState st) @nogc nothrow @trusted {
+    const f = &p.functions[fn];
+    const locals = p.locals(*f);
+    foreach (i, slot; locals)
+        st.setValue(slot, i < args.length ? args[i] : Value.init);
+    Value result;
+    const code = p.code;
+    int pc = f.entry, steps = 0;
+    run: while (pc >= 0 && pc < code.length && ++steps <= maxSteps) {
+        const ins = &code[pc];
+        switch (ins.op) {
+        case Op.jump:
+            pc = ins.a;
+            break;
+        case Op.jumpIfNot:
+            pc = truthy(evaluate(p, ins.a, st)) ? pc + 1 : ins.b;
+            break;
+        case Op.assign:
+            doAssign(p, cast(AssignOp)ins.sub, ins.a, ins.b, st);
+            pc++;
+            break;
+        case Op.store:
+            doStore(p, *ins, st);
+            pc++;
+            break;
+        case Op.exec:
+            evaluate(p, ins.a, st);
+            pc++;
+            break;
+        case Op.ret:
+            if (ins.a >= 0)
+                result = evaluate(p, ins.a, st);
+            break run;
+        default:
+            break run;
+        }
+    }
+    // Locals do not outlive the call (the result is on the caller's stack until it is stored).
+    foreach (slot; locals)
+        st.setValue(slot, Value.init);
+    return result;
+}
+
 /// Evaluates the expression starting at `pc`.
 Value evaluate(ref const StoryProgram p, int pc, ref StoryState st) @nogc nothrow @trusted {
     Value[maxExprStack + 1] stack = void;
@@ -277,6 +357,20 @@ Value evaluate(ref const StoryProgram p, int pc, ref StoryState st) @nogc nothro
         case XOp.call: {
                 immutable n = x.argc;
                 immutable r = builtin(cast(Builtin)x.arg, stack[sp - n .. sp], st);
+                sp -= n;
+                stack[sp++] = r;
+                break;
+            }
+        case XOp.callFn: {
+                immutable n = x.argc;
+                immutable r = callFunction(p, x.arg, stack[sp - n .. sp], st);
+                sp -= n;
+                stack[sp++] = r;
+                break;
+            }
+        case XOp.callHost: {
+                immutable n = x.argc;
+                immutable r = p.hosts[x.arg].fn(stack[sp - n .. sp], st, cast(void*)p.hostContext);
                 sp -= n;
                 stack[sp++] = r;
                 break;
@@ -530,7 +624,8 @@ struct StoryRunner {
                 pc = calls[--depth];
                 break;
             case Op.assign:
-                assign(cast(AssignOp)ins.sub, ins.a, ins.b, st);
+                doAssign(*prog, cast(AssignOp)ins.sub, ins.a, ins.b, st);
+                maybeCollect(st);
                 pc++;
                 break;
             case Op.event: {
@@ -543,19 +638,11 @@ struct StoryRunner {
                     pc++;
                     break;
                 }
-            case Op.store: {
-                    immutable c = evaluate(*prog, ins.a, st), k = evaluate(*prog, ins.b, st);
-                    Value v = ins.c < 0 ? Value.boolean(true) : evaluate(*prog, ins.c, st);
-                    immutable op = cast(AssignOp)ins.sub;
-                    if (op == AssignOp.clear)
-                        v = Value.boolean(false);
-                    else if (op != AssignOp.set)
-                        v = combine(op, st.at(c, k), v, st);
-                    st.put(c, k, v);
-                    maybeCollect(st);
-                    pc++;
-                    break;
-                }
+            case Op.store:
+                doStore(*prog, ins, st);
+                maybeCollect(st);
+                pc++;
+                break;
             case Op.exec:
                 evaluate(*prog, ins.a, st);
                 maybeCollect(st);
@@ -573,24 +660,6 @@ struct StoryRunner {
                 }
             }
         }
-    }
-
-    private void assign(AssignOp op, int slot, int expr, ref StoryState st) @nogc nothrow @trusted {
-        if (op == AssignOp.clear) {
-            st.setValue(slot, Value.boolean(false));
-            return;
-        }
-        immutable rhs = expr < 0 ? Value.boolean(true) : evaluate(*prog, expr, st);
-        st.setValue(slot, op == AssignOp.set ? rhs : combine(op, st.value(slot), rhs, st));
-        maybeCollect(st);
-    }
-
-    private static Value combine(AssignOp op, const Value cur, const Value rhs, ref StoryState st) @nogc nothrow @safe {
-        if (op == AssignOp.add)
-            return plus(cur, rhs, st);
-        immutable a = toNumber(cur), b = toNumber(rhs);
-        return Value.number(op == AssignOp.sub ? a - b : (op == AssignOp.mul ? a * b
-                : (op == AssignOp.div ? a / b : modOf(a, b))));
     }
 
     /// Statement boundary: nothing lives on an expression stack, so garbage may go.
@@ -619,8 +688,8 @@ int trigger(ref const StoryProgram p, TriggerKind kind, const(char)[] target, re
     return -1;
 }
 
-/// Sets every declared starting value (`var x = 3`, record field defaults); call after
-/// `StoryState.reset` for a new playthrough.
+/// Sets every declared starting value (`var x = 3`, record field defaults, `data` tables, which
+/// are then frozen); call after `StoryState.reset` for a new playthrough.
 void initialize(ref const StoryProgram p, ref StoryState st) @nogc nothrow @trusted {
     if (p.initEntry < 0)
         return;
@@ -628,6 +697,8 @@ void initialize(ref const StoryProgram p, ref StoryState st) @nogc nothrow @trus
     StoryEvents ev;
     r.start(p, p.initEntry, st, ev);
     assert(!r.active);
+    foreach (slot; p.dataSlots)
+        st.freeze(st.value(slot));
 }
 
 version (unittest) {
@@ -869,4 +940,92 @@ label collections:
     immutable h = st.hash();
     st.collect();
     assert(st.hash() == h);
+}
+
+@nogc nothrow unittest {
+    // `data` tables over several lines, `def` functions with locals, symbols, host functions.
+    static Value twice(scope const(Value)[] args, ref StoryState st, void* ctx) @nogc nothrow {
+        return Value.number(toNumber(args[0]) * 2 + (ctx ? *cast(int*)ctx : 0));
+    }
+
+    static immutable HostFn[] hosts = [HostFn("twice", 1, 1, &twice)];
+    immutable text = `
+def grow(base, steps):
+    t = {name: base.name, cost: base.cost}
+    for i in range(steps):
+        t.cost = floor(t.cost * 130 / 100)
+    return t
+
+def label_of(t):
+    if t.kind == :arrow:
+        return "bow"
+    return "other"
+
+data towers = [
+    {name: "Arrow", kind: :arrow, cost: 50},   # comments inside are fine
+    {name: "Cannon",
+     kind: :cannon, cost: 80},
+]
+data big = grow(towers[1], 2)
+var picked = :none
+
+on start -> go
+label go:
+    picked = towers[0].kind
+    t = grow(towers[0], 1)
+    Costs {t.cost} then {big.cost}, {label_of(towers[0])}/{label_of(towers[1])}, {picked}, {twice(4)}.
+    if picked == :arrow and picked != :cannon and str(picked) == "arrow":
+        ok = towers[1][:cost]
+    towers[0].cost = 1
+`;
+    StoryProgram p;
+    StoryState st;
+    immutable err = compileText(p, st, text, hosts);
+    if (err != StoryError.none)
+        dumpDiagnostics(p);
+    assert(err == StoryError.none);
+    assert(p.functions.length == 2 && p.dataSlots.length == 2);
+    initialize(p, st);
+    // The data table is frozen; grow's locals were cleared after the call.
+    const towers = st.value(st.find("towers"));
+    assert(st.frozen(towers) && st.count(towers) == 2 && st.value(st.find("grow@t")).isNil);
+    assert(st.get(st.find("big")) == 0 && toNumber(st.at(st.value(st.find("big")), Value.constText("cost"))) == 135);
+    int extra = 1;
+    p.hostContext = &extra;
+    StoryRunner r;
+    StoryEvents ev;
+    int entry;
+    trigger(p, TriggerKind.start, null, st, entry);
+    r.start(p, entry, st, ev);
+    assert(r.line.text == "Costs 65 then 135, bow/other, arrow, 9.");
+    r.advance(st, ev);
+    assert(!r.active && st.named("ok") == 80);
+    // Writes into frozen data are refused.
+    assert(toNumber(st.at(st.items(towers)[0], Value.constText("cost"))) == 50);
+}
+
+@nogc nothrow unittest {
+    // Function and data misuse is reported.
+    static void expectError(const(char)[] text, const(char)[] what) @nogc nothrow {
+        StoryProgram p;
+        StoryState st;
+        assert(compileText(p, st, text) != StoryError.none);
+        foreach (ref d; p.diagnostics) {
+            const m = d.message;
+            foreach (k; 0 .. m.length + 1)
+                if (k + what.length <= m.length && m[k .. k + what.length] == what)
+                    return;
+        }
+        dumpDiagnostics(p);
+        assert(0);
+    }
+
+    expectError("def f(x):\n    return g(x)\ndef g(x):\n    return f(x)\n", "recursive");
+    expectError("def f(x):\n    elder: hi\n", "not allowed inside a function");
+    expectError("def f(x):\n    -> f\n", "not allowed inside a function");
+    expectError("label a:\n    return 3\n", "only a function");
+    expectError("data d = 1\nlabel a:\n    d = 2\n", "read-only");
+    expectError("def f(x):\n    return x\nlabel a:\n    y = f(1, 2)\n", "takes 1 arguments");
+    expectError("def len(x):\n    return x\n", "built-in");
+    expectError("def f(a, a):\n    return a\n", "named twice");
 }

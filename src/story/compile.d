@@ -27,10 +27,13 @@ alias SourceLoader = const(char)[]delegate(const(char)[] path, ref FileBytes scr
 enum int maxStoryFiles = 64;
 
 /// Compiles `entry` (and everything it imports) into `p`, interning every variable into `st`.
-/// Variables already in `st` count as set by the game. Returns the first error class; the full
-/// list (with warnings) is in `p.diagnostics`.
-StoryError compileStory(ref StoryProgram p, ref StoryState st, const(char)[] entry, scope SourceLoader load) @nogc nothrow @trusted {
+/// Variables already in `st` count as set by the game. `hosts` are the game functions scripts may
+/// call; the table must outlive `p`. Returns the first error class; the full list (with warnings)
+/// is in `p.diagnostics`.
+StoryError compileStory(ref StoryProgram p, ref StoryState st, const(char)[] entry,
+        scope SourceLoader load, const(HostFn)[] hosts = null) @nogc nothrow @trusted {
     p.clear();
+    p.hosts_ = hosts;
     Compiler c;
     c.p = &p;
     c.st = &st;
@@ -40,19 +43,23 @@ StoryError compileStory(ref StoryProgram p, ref StoryState st, const(char)[] ent
 }
 
 /// Compiles one in-memory story (no imports); for tests and tools.
-StoryError compileText(ref StoryProgram p, ref StoryState st, const(char)[] text) @nogc nothrow @trusted {
+StoryError compileText(ref StoryProgram p, ref StoryState st, const(char)[] text, const(HostFn)[] hosts = null) @nogc nothrow @trusted {
     const(char)[] loader(const(char)[] path, ref FileBytes) @nogc nothrow {
         return path == "inline.story" ? text : null;
     }
 
-    return compileStory(p, st, "inline.story", &loader);
+    return compileStory(p, st, "inline.story", &loader, hosts);
 }
 
 private:
 
 enum SlotUse : ubyte {
     read = 1,
-    written = 2
+    written = 2,
+    /// Declared at the top level (`var`, `data`, record fields): global inside functions too.
+    declared = 4,
+    /// `data`: scripts may not assign it.
+    readOnly = 8
 }
 
 struct SrcLine {
@@ -89,6 +96,17 @@ struct Fixup {
     int line;
 }
 
+/// A parameter or local of the function being compiled.
+struct LocalInfo {
+    const(char)[] name;
+    int slot;
+}
+
+/// `from` calls `to` (both function indexes), for the recursion check.
+struct CallEdge {
+    int from, to, line;
+}
+
 /// A label's name and the line declaring it (for "unused" warnings).
 struct LabelInfo {
     const(char)[] name;
@@ -120,7 +138,7 @@ bool hasBody(const(char)[] rule) @nogc nothrow pure @safe {
     ])
         if (r == rule)
             return true;
-    return false;
+    return rule == "DefDecl";
 }
 
 /// Source text of a node.
@@ -160,6 +178,9 @@ struct Compiler {
     Pool!LabelInfo labels;
     Pool!Fixup fixups;
     Pool!ubyte slotUse;
+    /// Declaring line of each function (parallel to `p.fns_`).
+    Pool!int fnLines;
+    Pool!CallEdge calls;
     TextArena scratch;
     int errors, syntaxErrors;
     bool oom;
@@ -172,6 +193,9 @@ struct Compiler {
     // Scene emission state.
     const(char)[] curLabel, curLineId;
     uint forCount;
+    /// Function whose body is being emitted, or -1; its parameters and locals.
+    int curFn = -1;
+    Pool!LocalInfo curLocals;
 
     StoryError run(const(char)[] entry) {
         if (!loadFile(entry, -1))
@@ -180,6 +204,7 @@ struct Compiler {
         declare();
         emitScenes();
         resolveFixups();
+        checkRecursion();
         warnings();
         if (oom)
             return StoryError.outOfMemory;
@@ -294,7 +319,10 @@ struct Compiler {
         bool ok = true;
         uint lineNo = 0;
         size_t i = 0;
-        while (i < text.length) {
+        // Next physical line: its indentation and content (trimmed); false at the end of text.
+        bool nextLine(out uint indent, out const(char)[] content) {
+            if (i >= text.length)
+                return false;
             size_t e = i;
             while (e < text.length && text[e] != '\n')
                 e++;
@@ -303,18 +331,40 @@ struct Compiler {
             i = e + 1;
             if (raw.length && raw[$ - 1] == '\r')
                 raw = raw[0 .. $ - 1];
-            uint indent = 0;
             size_t k = 0;
             while (k < raw.length && (raw[k] == ' ' || raw[k] == '\t')) {
                 indent += raw[k] == '\t' ? 4 : 1;
                 k++;
             }
-            auto content = raw[k .. $];
+            content = raw[k .. $];
             while (content.length && (content[$ - 1] == ' ' || content[$ - 1] == '\t'))
                 content = content[0 .. $ - 1];
+            return true;
+        }
+
+        uint indent;
+        const(char)[] content;
+        while (nextLine(indent, content)) {
             if (content.length == 0 || content[0] == '#')
                 continue;
-            if (!lines.push(SrcLine(cast(ushort)f, lineNo, indent, indent, content))) {
+            immutable firstLine = lineNo;
+            if (continues(content)) {
+                // A statement left open (an unclosed bracket, a trailing `,` or `:-`) that does
+                // not parse on its own goes on over the following lines.
+                ParseContext pc;
+                if (!parseLine(pc, content).successful) {
+                    auto joined = codePart(content);
+                    uint ci;
+                    const(char)[] more;
+                    while (continues(joined) && nextLine(ci, more)) {
+                        if (more.length == 0 || more[0] == '#')
+                            continue;
+                        joined = joinLine(joined, codePart(more));
+                    }
+                    content = joined;
+                }
+            }
+            if (!lines.push(SrcLine(cast(ushort)f, firstLine, indent, indent, content))) {
                 oom = true;
                 return false;
             }
@@ -340,6 +390,52 @@ struct Compiler {
             }
         }
         return ok;
+    }
+
+    /// `s` without a trailing `# comment` (outside strings).
+    static const(char)[] codePart(const(char)[] s) @nogc nothrow pure @safe {
+        bool quote = false;
+        foreach (k, c; s) {
+            if (c == '"' && (k == 0 || s[k - 1] != '\\'))
+                quote = !quote;
+            else if (c == '#' && !quote) {
+                auto r = s[0 .. k];
+                while (r.length && (r[$ - 1] == ' ' || r[$ - 1] == '\t'))
+                    r = r[0 .. $ - 1];
+                return r;
+            }
+        }
+        return s;
+    }
+
+    /// True when code line `s` is left open: more `( [ {` than closers (outside strings and the
+    /// trailing comment), or it ends in `,` or `:-`.
+    static bool continues(const(char)[] s) @nogc nothrow pure @safe {
+        s = codePart(s);
+        int open = 0;
+        bool quote = false;
+        foreach (k, c; s) {
+            if (c == '"' && (k == 0 || s[k - 1] != '\\'))
+                quote = !quote;
+            else if (!quote && (c == '(' || c == '[' || c == '{'))
+                open++;
+            else if (!quote && (c == ')' || c == ']' || c == '}'))
+                open--;
+        }
+        return open > 0 || (s.length && s[$ - 1] == ',') || (s.length > 1 && s[$ - 2 .. $] == ":-");
+    }
+
+    /// `a b` in the scratch arena.
+    const(char)[] joinLine(const(char)[] a, const(char)[] b) {
+        auto d = scratch.alloc(a.length + 1 + b.length);
+        if (d is null) {
+            oom = true;
+            return a;
+        }
+        d[0 .. a.length] = a[];
+        d[a.length] = ' ';
+        d[a.length + 1 .. $] = b[];
+        return d;
     }
 
     /// Sub-label markers (`.ask:`) may sit at any indentation; they take the next line's.
@@ -416,7 +512,8 @@ struct Compiler {
                 sp.name = nm ? unescape(strBody(*nm)) : sp.id;
                 sp.portrait = sp.figure = sp.id;
                 p.speakers_.push(sp);
-            }
+            } else if (kind == "DefDecl")
+                declareFn(i, *s);
         });
         // Everything that creates variables, in file order (the initializer runs in this order).
         p.init_ = cast(int)p.code_.length;
@@ -433,7 +530,9 @@ struct Compiler {
                 place(i, end, *s);
             else if (kind == "VarDecl")
                 varDecl(i, *s);
-            else if (kind == "TypeDecl" || kind == "LabelDecl" || kind == "Import")
+            else if (kind == "DataDecl")
+                dataDecl(i, *s);
+            else if (kind == "TypeDecl" || kind == "LabelDecl" || kind == "Import" || kind == "DefDecl")
                 return;
             else if (kind == "On") {
                 if (child(*s, "OnBlock") is null && end > i + 1)
@@ -445,6 +544,44 @@ struct Compiler {
                 error(i + 1, 0, "unexpected indented block");
         });
         emit(Ins(Op.ret));
+    }
+
+    void declareFn(int i, ref const ParseTree s) {
+        const name = src(s.children[0]);
+        foreach (ref b; builtinTable)
+            if (b.name == name)
+                return error(i, 0, "%.*s is a built-in function", cast(int)name.length, name.ptr);
+        foreach (ref h; p.hosts_)
+            if (h.name == name)
+                return error(i, 0, "%.*s is a game function", cast(int)name.length, name.ptr);
+        if (p.findFunction(name) >= 0)
+            return error(i, 0, "function %.*s declared twice", cast(int)name.length, name.ptr);
+        immutable argc = s.children.length - 1;
+        if (argc > 16)
+            return error(i, 0, "more than 16 parameters");
+        foreach (a; 1 .. s.children.length)
+            foreach (b; a + 1 .. s.children.length)
+                if (src(s.children[a]) == src(s.children[b]))
+                    return error(i, 0, "parameter %.*s named twice", cast(int)src(s.children[a])
+                            .length, src(s.children[a]).ptr);
+        StoryFn f;
+        f.name = keep(name);
+        f.argc = cast(ubyte)argc;
+        if (!p.fns_.push(f) || !fnLines.push(i))
+            oom = true;
+    }
+
+    /// `data name = expr`: a variable set once by the initializer, then read-only (deeply).
+    void dataDecl(int i, ref const ParseTree s) {
+        immutable slot = intern(src(s.children[0]), i);
+        if (slot < 0)
+            return;
+        if (slot < slotUse.length && (slotUse[slot] & SlotUse.declared))
+            return error(i, 0, "%.*s declared twice", cast(int)st.name(slot).length, st.name(slot).ptr);
+        markUse(slot, SlotUse.written | SlotUse.declared | SlotUse.readOnly);
+        initAssign(slot, i, s.children[1], null);
+        if (!p.dataSlots_.push(slot))
+            oom = true;
     }
 
     void addLabel(const(char)[] name, int line) {
@@ -519,7 +656,7 @@ struct Compiler {
             immutable slot = intern(join(prefix, src(path)), k);
             if (slot < 0)
                 return;
-            markUse(slot, SlotUse.written);
+            markUse(slot, SlotUse.written | SlotUse.declared);
             if (const b = child(f, "Bounds"))
                 bounds(slot, k, *b);
             initAssign(slot, k, f.children[2], prefix);
@@ -579,7 +716,9 @@ struct Compiler {
         immutable slot = intern(name, i);
         if (slot < 0)
             return;
-        markUse(slot, SlotUse.written);
+        if (slot < slotUse.length && (slotUse[slot] & SlotUse.readOnly))
+            return error(i, 0, "%.*s is declared as data", cast(int)name.length, name.ptr);
+        markUse(slot, SlotUse.written | SlotUse.declared);
         if (const b = child(s, "Bounds"))
             bounds(slot, i, *b);
         initAssign(slot, i, child(s, "VarInit").children[0], null);
@@ -650,6 +789,42 @@ struct Compiler {
         slotUse[slot] |= u;
     }
 
+    /// Slot of parameter or local `name` of the function being compiled, or -1. With `create`, a
+    /// plain name that is not a declared global becomes a new local (assignment makes locals).
+    int local(const(char)[] name, bool create, int line) {
+        if (curFn < 0)
+            return -1;
+        foreach (ref l; curLocals.slice)
+            if (l.name == name)
+                return l.slot;
+        if (!create)
+            return -1;
+        immutable g = st.find(name);
+        if (g >= 0 && (g < external || (g < slotUse.length && (slotUse[g] & SlotUse.declared))))
+            return -1;
+        return addLocal(name, line);
+    }
+
+    int addLocal(const(char)[] name, int line) {
+        // Hidden variable `fn@name`: functions are not recursive, so one slot per local suffices.
+        const fname = p.fns_[curFn].name;
+        auto d = scratch.alloc(fname.length + 1 + name.length);
+        if (d is null) {
+            oom = true;
+            return -1;
+        }
+        d[0 .. fname.length] = fname[];
+        d[fname.length] = '@';
+        d[fname.length + 1 .. $] = name[];
+        immutable slot = intern(keep(d), line);
+        if (slot < 0)
+            return -1;
+        markUse(slot, SlotUse.written);
+        if (!curLocals.push(LocalInfo(keep(name), slot)) || !p.fnLocals_.push(slot))
+            oom = true;
+        return slot;
+    }
+
     bool isRecord(const(char)[] path) {
         foreach (r; records.slice)
             if (r == path)
@@ -714,7 +889,12 @@ struct Compiler {
     /// name as a map key (`citizen.health.food`).
     void emitDynamicPath(ref const ParseTree t, size_t segs, int line) {
         const root = src(t.children[0]);
-        if (!resolveRead(root, line, t)) {
+        immutable loc = local(root, false, line);
+        if (loc >= 0) {
+            markUse(loc, SlotUse.read);
+            emitX(XOp.load, loc);
+            push(1);
+        } else if (!resolveRead(root, line, t)) {
             immutable slot = intern(root, line);
             if (slot >= 0)
                 markUse(slot, SlotUse.read);
@@ -807,6 +987,13 @@ struct Compiler {
             }
         case "String":
             return emitString(t, line);
+        case "Symbol": {
+                immutable v = st.symbol(src(t)[1 .. $]);
+                if (v.isNil)
+                    oom = true;
+                emitX(XOp.konst, constant(v));
+                return push(1);
+            }
         case "CallExpr":
             return emitCall(t, line);
         case "Path":
@@ -859,6 +1046,30 @@ struct Compiler {
                 push(1 - argc);
                 return;
             }
+        immutable fn = p.findFunction(name);
+        if (fn >= 0) {
+            if (argc != p.fns_[fn].argc)
+                error(line, colOf(line, t), "%.*s takes %d arguments", cast(int)name.length,
+                        name.ptr, p.fns_[fn].argc);
+            if (curFn >= 0 && !calls.push(CallEdge(curFn, fn, line)))
+                oom = true;
+            foreach (ref a; t.children[1 .. $])
+                emitExpr(a, line);
+            emitX(XOp.callFn, fn, argc);
+            push(1 - argc);
+            return;
+        }
+        foreach (h, ref hf; p.hosts_)
+            if (hf.name == name) {
+                if (argc < hf.minArgs || argc > hf.maxArgs)
+                    error(line, colOf(line, t), "%.*s takes %d to %d arguments",
+                            cast(int)name.length, name.ptr, hf.minArgs, hf.maxArgs);
+                foreach (ref a; t.children[1 .. $])
+                    emitExpr(a, line);
+                emitX(XOp.callHost, cast(int)h, argc);
+                push(1 - argc);
+                return;
+            }
         error(line, colOf(line, t), "unknown function %.*s", cast(int)name.length, name.ptr);
         emitX(XOp.konst, constant(Value.init));
         push(1);
@@ -871,6 +1082,14 @@ struct Compiler {
 
     void emitPath(ref const ParseTree t, int line) {
         const path = pathOf(t);
+        if (curFn >= 0 && local(src(t.children[0]), false, line) >= 0) {
+            if (t.children.length > 1)
+                return emitDynamicPath(t, t.children.length, line);
+            immutable loc = local(path, false, line);
+            markUse(loc, SlotUse.read);
+            emitX(XOp.load, loc);
+            return push(1);
+        }
         if (scope_.length && resolveRead(join(scope_, path), line, t))
             return;
         if (resolveRead(path, line, t))
@@ -940,6 +1159,11 @@ struct Compiler {
     /// The slot an assignment to `path` writes, or -1 (reported).
     int lvalue(ref const ParseTree t, int line) {
         const path = pathOf(t);
+        if (t.children.length == 1) {
+            immutable loc = local(path, true, line);
+            if (loc >= 0)
+                return loc;
+        }
         foreach (ref d; derived.slice)
             if (d.path == path) {
                 error(line, colOf(line, t), "%.*s is derived and cannot be assigned", cast(int)path.length, path.ptr);
@@ -951,6 +1175,10 @@ struct Compiler {
                 return -1;
             }
         immutable found = st.find(path);
+        if (found >= 0 && found < slotUse.length && (slotUse[found] & SlotUse.readOnly)) {
+            error(line, colOf(line, t), "%.*s is data (read-only)", cast(int)path.length, path.ptr);
+            return -1;
+        }
         if (found >= 0 || t.children.length == 1) {
             immutable slot = found >= 0 ? found : intern(path, line);
             if (slot >= 0)
@@ -1154,8 +1382,29 @@ struct Compiler {
                 emit(Ins(Op.ret));
             } else if (kind == "On")
                 onTrigger(i, end, *s);
+            else if (kind == "DefDecl")
+                fnBody(i, end, *s);
         });
         curLabel = curLineId = null;
+    }
+
+    void fnBody(int i, int end, ref const ParseTree s) {
+        immutable fn = p.findFunction(src(s.children[0]));
+        // A duplicate declaration was reported; only the first one gets a body.
+        if (fn < 0 || fnLines[fn] != i)
+            return;
+        curFn = fn;
+        curLocals.clear();
+        curLabel = curLineId = null;
+        p.fns_[fn].localStart = p.fnLocals_.length;
+        foreach (ref a; s.children[1 .. $])
+            addLocal(src(a), i);
+        p.fns_[fn].entry = here();
+        block(i + 1, end);
+        emit(Ins(Op.ret));
+        p.fns_[fn].localLen = p.fnLocals_.length - p.fns_[fn].localStart;
+        curFn = -1;
+        curLocals.clear();
     }
 
     void setLabelPc(const(char)[] name, int pc) {
@@ -1242,6 +1491,11 @@ struct Compiler {
             if (!hasBody(kind) && e > k + 1)
                 error(k + 1, 0, "unexpected indented block");
             if (kind == "Option") {
+                if (curFn >= 0) {
+                    error(k, 0, "choices are not allowed inside a function");
+                    k = e;
+                    continue;
+                }
                 k = menu(k, end, ind);
                 continue;
             }
@@ -1324,6 +1578,10 @@ struct Compiler {
     }
 
     void statement(int k, ref const ParseTree s, const(char)[] kind) {
+        if (curFn >= 0 && kind != "Assign" && kind != "SetStmt" && kind != "ClearStmt"
+                && kind != "CallStmt" && kind != "Return")
+            return error(k, 0, "%.*s is not allowed inside a function (functions compute and assign)",
+                    cast(int)kind.length, kind.ptr);
         switch (kind) {
         case "Say": {
                 SayRec say;
@@ -1351,7 +1609,9 @@ struct Compiler {
         case "Call":
             return fixup(emit(Ins(Op.call)), 0, src(s.children[0]), k);
         case "Return":
-            emit(Ins(Op.ret));
+            if (s.children.length && curFn < 0)
+                return error(k, 0, "only a function (def) returns a value");
+            emit(Ins(Op.ret, 0, s.children.length ? expression(s.children[0], k) : -1));
             return;
         case "End":
             emit(Ins(Op.jump, 0, -1));
@@ -1450,7 +1710,8 @@ struct Compiler {
         immutable n = snprintf(nb.ptr, nb.length, "for#%u", forCount++);
         immutable listSlot = intern(keep(join(nb[0 .. n], "list")), k);
         immutable iSlot = intern(keep(join(nb[0 .. n], "i")), k);
-        immutable varSlot = intern(src(s.children[0]), k);
+        immutable loopLocal = local(src(s.children[0]), true, k);
+        immutable varSlot = loopLocal >= 0 ? loopLocal : intern(src(s.children[0]), k);
         if (listSlot < 0 || iSlot < 0 || varSlot < 0)
             return;
         markUse(listSlot, SlotUse.read | SlotUse.written);
@@ -1529,6 +1790,37 @@ struct Compiler {
             else
                 ins.c = pc;
         }
+    }
+
+    /// Functions may not call themselves, directly or through others (their locals are single
+    /// hidden variables).
+    void checkRecursion() {
+        immutable n = p.fns_.length;
+        if (n == 0 || calls.length == 0)
+            return;
+        // Depth-first search with colors: 0 new, 1 on the stack, 2 done.
+        Pool!ubyte color;
+        foreach (k; 0 .. n)
+            color.push(0);
+        bool visit(int f) {
+            color[f] = 1;
+            foreach (ref c; calls.slice)
+                if (c.from == f) {
+                    if (color[c.to] == 1) {
+                        const nm = p.fns_[c.to].name;
+                        error(c.line, 0, "function %.*s is recursive", cast(int)nm.length, nm.ptr);
+                        return false;
+                    }
+                    if (color[c.to] == 0 && !visit(c.to))
+                        return false;
+                }
+            color[f] = 2;
+            return true;
+        }
+
+        foreach (f; 0 .. n)
+            if (color[f] == 0 && !visit(f))
+                return;
     }
 
     void warnings() {

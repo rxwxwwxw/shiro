@@ -26,6 +26,8 @@ private struct Coll {
     Value* keys;
     uint len, cap;
     bool isMap, live, marked;
+    /// Read-only (`data` declarations): writes fail.
+    bool frozen;
 }
 
 /// Most elements one collection holds.
@@ -38,6 +40,8 @@ struct StoryState {
     private uint newColls;
     private Pool!Value values;
     private TextArena names;
+    /// Symbol names by id (`:name`); kept by `reset`, like variable names.
+    private Pool!(const(char)[]) symbols;
     private char* heap;
     private size_t heapLen, heapCap;
     /// Story dice (`rand`); reseeded by `reset`.
@@ -124,10 +128,25 @@ struct StoryState {
         return true;
     }
 
+    /// Makes `c` and every collection reachable from it read-only.
+    void freeze(Value c) @nogc nothrow @trusted {
+        auto k = coll(c);
+        if (k is null || k.frozen)
+            return;
+        k.frozen = true;
+        foreach (i; 0 .. k.len)
+            freeze(k.vals[i]);
+    }
+
+    bool frozen(const Value c) const @nogc nothrow @safe {
+        auto k = coll(c);
+        return k !is null && k.frozen;
+    }
+
     /// Appends to a list; false when `list` is not one or memory runs out.
     bool append(Value list, Value v) @nogc nothrow @trusted {
         auto k = coll(list);
-        if (k is null || k.isMap || !grow(*k))
+        if (k is null || k.isMap || k.frozen || !grow(*k))
             return false;
         k.vals[k.len++] = v;
         return true;
@@ -141,14 +160,23 @@ struct StoryState {
         return -1;
     }
 
-    /// `c[key]`: list index (number, negative counts from the end) or map key (string); nil
-    /// when absent.
+    /// A map key's characters: a string, or a symbol's name (`m[:damage]` is `m["damage"]`).
+    const(char)[] keyText(const Value key) const return @nogc nothrow @safe {
+        return key.isSymbol ? symbolName(key) : text(key);
+    }
+
+    private static bool keyLike(const Value key) @nogc nothrow pure @safe {
+        return key.isText || key.isSymbol;
+    }
+
+    /// `c[key]`: list index (number, negative counts from the end) or map key (string or
+    /// symbol); nil when absent.
     Value at(const Value c, const Value key) const @nogc nothrow @trusted {
         auto k = coll(c);
         if (k is null)
             return Value.init;
         if (k.isMap) {
-            immutable i = key.isText ? keyIndex(*k, text(key)) : -1;
+            immutable i = keyLike(key) ? keyIndex(*k, keyText(key)) : -1;
             return i < 0 ? Value.init : k.vals[i];
         }
         immutable i = listIndex(*k, key);
@@ -167,7 +195,7 @@ struct StoryState {
     /// `c[key] = v`; a new map key is added, a list index must exist. False when it cannot.
     bool put(Value c, Value key, Value v) @nogc nothrow @trusted {
         auto k = coll(c);
-        if (k is null)
+        if (k is null || k.frozen)
             return false;
         if (!k.isMap) {
             immutable i = listIndex(*k, key);
@@ -176,16 +204,17 @@ struct StoryState {
             k.vals[i] = v;
             return true;
         }
-        if (!key.isText)
+        if (!keyLike(key))
             return false;
-        immutable i = keyIndex(*k, text(key));
+        immutable i = keyIndex(*k, keyText(key));
         if (i >= 0) {
             k.vals[i] = v;
             return true;
         }
         if (!grow(*k))
             return false;
-        k.keys[k.len] = key;
+        // Keys are strings; a symbol key is stored by name.
+        k.keys[k.len] = key.isSymbol ? Value.constText(symbolName(key)) : key;
         k.vals[k.len++] = v;
         return true;
     }
@@ -193,9 +222,9 @@ struct StoryState {
     /// Removes list index or map key `key`; false when absent.
     bool remove(Value c, Value key) @nogc nothrow @trusted {
         auto k = coll(c);
-        if (k is null)
+        if (k is null || k.frozen)
             return false;
-        long i = k.isMap ? (key.isText ? keyIndex(*k, text(key)) : -1) : listIndex(*k, key);
+        long i = k.isMap ? (keyLike(key) ? keyIndex(*k, keyText(key)) : -1) : listIndex(*k, key);
         if (i < 0)
             return false;
         foreach (j; cast(uint)i + 1 .. k.len) {
@@ -210,6 +239,30 @@ struct StoryState {
     /// Collections created since the last `collect`.
     uint collectionsCreated() const @nogc nothrow pure @safe {
         return newColls;
+    }
+
+    /// The symbol `:name` (interned on first use); nil when the name is empty or memory runs out.
+    Value symbol(const(char)[] name) @nogc nothrow @trusted {
+        Value v;
+        foreach (i, n; symbols.slice)
+            if (n == name) {
+                v.kind = ValueKind.symbol;
+                v.off = i;
+                return v;
+            }
+        if (name.length == 0 || name.length > maxStoryNameLen)
+            return v;
+        auto copy = names.copy(name);
+        if (copy is null || !symbols.push(copy))
+            return v;
+        v.kind = ValueKind.symbol;
+        v.off = symbols.length - 1;
+        return v;
+    }
+
+    /// Name of a symbol value (null for other kinds).
+    const(char)[] symbolName(const Value v) const return @nogc nothrow @trusted {
+        return v.kind == ValueKind.symbol && v.off < symbols.length ? symbols.slice[v.off] : null;
     }
 
     /// Id of `name`, adding it (value nil) when new; -1 when the name is empty, too long or memory
@@ -442,7 +495,10 @@ struct StoryState {
                 mix(cast(uint)(bits >> (k * 8)) & 0xFF);
         } else if (v.kind == ValueKind.boolean)
             mix(v.b);
-        else if (v.isCollection) {
+        else if (v.kind == ValueKind.symbol) {
+            foreach (c; symbolName(v))
+                mix(c);
+        } else if (v.isCollection) {
             // Contents, not ids; cycles are cut off by depth.
             if (depth > 8)
                 return;
@@ -529,6 +585,23 @@ struct StoryState {
     s.setValue(b, Value.init);
     s.collect();
     assert(s.count(xs) == 0);
+}
+
+@nogc nothrow @safe unittest {
+    // Symbols intern by name and survive reset; frozen collections refuse writes, deeply.
+    StoryState s;
+    immutable a = s.symbol("elder"), b = s.symbol("smith");
+    assert(a.isSymbol && s.symbol("elder").off == a.off && b.off != a.off);
+    assert(s.symbolName(b) == "smith" && s.symbolName(Value.number(1)) is null);
+    assert(s.symbol("").isNil);
+    auto outer = s.newCollection(true), inner = s.newCollection(false);
+    assert(s.put(outer, Value.constText("xs"), inner) && s.append(inner, a));
+    s.freeze(outer);
+    assert(s.frozen(outer) && s.frozen(inner));
+    assert(!s.append(inner, b) && !s.put(outer, Value.constText("y"), b) && !s.remove(inner, Value.number(0)));
+    assert(s.count(inner) == 1 && s.symbolName(s.items(inner)[0]) == "elder");
+    s.reset();
+    assert(s.symbol("smith").off == b.off);
 }
 
 @nogc nothrow @safe unittest {
