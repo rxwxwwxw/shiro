@@ -50,6 +50,7 @@ enum : nk_flags {
 nk_context* shiro_nk_init(SDL_Window* win, SDL_Renderer* renderer, float scale, const(char)* textFont);
 void shiro_nk_use_font(nk_context* ctx, int which);
 void shiro_nk_dialogue_style(nk_context* ctx, int push);
+void shiro_nk_game_style(nk_context* ctx, int push);
 void shiro_nk_handle_event(nk_context* ctx, SDL_Renderer* renderer, SDL_Event* evt);
 void shiro_nk_render(nk_context* ctx);
 void shiro_nk_shutdown(nk_context* ctx);
@@ -57,6 +58,7 @@ void shiro_nk_shutdown(nk_context* ctx);
 void nk_input_end(nk_context* ctx);
 bool nk_begin(nk_context* ctx, const(char)* title, nk_rect bounds, nk_flags flags);
 void nk_end(nk_context* ctx);
+void nk_window_set_bounds(nk_context* ctx, const(char)* name, nk_rect bounds);
 bool nk_window_is_any_hovered(const(nk_context)* ctx);
 bool nk_item_is_any_active(const(nk_context)* ctx);
 void nk_layout_row_dynamic(nk_context* ctx, float height, int cols);

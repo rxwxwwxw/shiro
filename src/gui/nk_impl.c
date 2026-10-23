@@ -57,8 +57,28 @@ static char *nk_sdl_dtoa(char *str, double d);
 
 #define NK_IMPLEMENTATION
 #include "nuklear.h"
+/* Nuklear clips window backgrounds and borders to its "no clip" rectangle (-8192 .. +8192). The GPU
+ * renderer drops geometry clipped that way, so the backend's clip rectangles are cut to the output
+ * first (the classic renderers accept either). */
+static bool shiro_set_clip(SDL_Renderer *renderer, const SDL_Rect *rect) {
+    if (rect == NULL)
+        return SDL_SetRenderClipRect(renderer, NULL);
+    int ow = 0, oh = 0;
+    float sx = 1, sy = 1;
+    SDL_GetCurrentRenderOutputSize(renderer, &ow, &oh);
+    SDL_GetRenderScale(renderer, &sx, &sy);
+    const int w = (int)(ow / (sx > 0 ? sx : 1)) + 1, h = (int)(oh / (sy > 0 ? sy : 1)) + 1;
+    int x0 = rect->x < 0 ? 0 : rect->x, y0 = rect->y < 0 ? 0 : rect->y;
+    int x1 = rect->x + rect->w > w ? w : rect->x + rect->w, y1 = rect->y + rect->h > h ? h : rect->y + rect->h;
+    SDL_Rect r = {x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0};
+    return SDL_SetRenderClipRect(renderer, &r);
+}
+#define SDL_SetRenderClipRect shiro_set_clip
+
 #define NK_SDL3_RENDERER_IMPLEMENTATION
 #include "nuklear_sdl3_renderer.h"
+
+#undef SDL_SetRenderClipRect
 
 static char *nk_sdl_dtoa(char *str, double d) {
     NK_ASSERT(str);
@@ -68,8 +88,8 @@ static char *nk_sdl_dtoa(char *str, double d) {
     return str;
 }
 
-/* Baked fonts: 0 = the panel's default font, 1 = dialogue text, 2 = speaker names. */
-static struct nk_font *shiro_fonts[3];
+/* Baked fonts: 0 = the panel's default font, 1 = dialogue text, 2 = speaker names, 3 = titles. */
+static struct nk_font *shiro_fonts[4];
 
 /* Creates the context, bakes the default font (and, when `text_font` names a TTF, the dialogue
  * fonts with Latin, Vietnamese and punctuation ranges) at `scale`, and starts the first input
@@ -88,9 +108,10 @@ struct nk_context *shiro_nk_init(SDL_Window *win, SDL_Renderer *renderer, float 
         tc.oversample_h = 2;
         shiro_fonts[1] = nk_font_atlas_add_from_file(atlas, text_font, 18 * scale, &tc);
         shiro_fonts[2] = nk_font_atlas_add_from_file(atlas, text_font, 22 * scale, &tc);
+        shiro_fonts[3] = nk_font_atlas_add_from_file(atlas, text_font, 44 * scale, &tc);
     }
     nk_sdl_font_stash_end(ctx);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 4; i++)
         if (shiro_fonts[i])
             shiro_fonts[i]->handle.height /= scale;
     nk_style_set_font(ctx, &shiro_fonts[0]->handle);
@@ -100,7 +121,7 @@ struct nk_context *shiro_nk_init(SDL_Window *win, SDL_Renderer *renderer, float 
 
 /* Switches the font for the widgets that follow (falls back to the default font). */
 void shiro_nk_use_font(struct nk_context *ctx, int which) {
-    struct nk_font *f = which >= 0 && which < 3 && shiro_fonts[which] ? shiro_fonts[which] : shiro_fonts[0];
+    struct nk_font *f = which >= 0 && which < 4 && shiro_fonts[which] ? shiro_fonts[which] : shiro_fonts[0];
     nk_style_set_font(ctx, &f->handle);
 }
 
@@ -129,6 +150,34 @@ void shiro_nk_dialogue_style(struct nk_context *ctx, int push) {
     nk_style_push_color(ctx, &s->button.text_active, nk_rgba(40, 20, 10, 255));
     nk_style_push_color(ctx, &s->text.color, nk_rgba(250, 236, 210, 255));
     nk_style_push_vec2(ctx, &s->window.padding, nk_vec2(10, 8));
+}
+
+/* The game's own look for menus and the HUD: dark lacquer panels with a gold rim, red buttons and
+ * warm text. `push` 1 applies it, 0 restores the panel look. */
+void shiro_nk_game_style(struct nk_context *ctx, int push) {
+    struct nk_style *s = &ctx->style;
+    if (!push) {
+        for (int i = 0; i < 5; i++)
+            nk_style_pop_style_item(ctx);
+        for (int i = 0; i < 8; i++)
+            nk_style_pop_color(ctx);
+        nk_style_pop_float(ctx);
+        return;
+    }
+    nk_style_push_style_item(ctx, &s->window.fixed_background, nk_style_item_color(nk_rgba(30, 22, 20, 228)));
+    nk_style_push_style_item(ctx, &s->button.normal, nk_style_item_color(nk_rgba(112, 38, 30, 235)));
+    nk_style_push_style_item(ctx, &s->button.hover, nk_style_item_color(nk_rgba(150, 56, 40, 245)));
+    nk_style_push_style_item(ctx, &s->button.active, nk_style_item_color(nk_rgba(186, 120, 52, 255)));
+    nk_style_push_style_item(ctx, &s->checkbox.normal, nk_style_item_color(nk_rgba(70, 50, 40, 255)));
+    nk_style_push_color(ctx, &s->window.border_color, nk_rgba(196, 150, 78, 255));
+    nk_style_push_color(ctx, &s->button.border_color, nk_rgba(214, 170, 92, 255));
+    nk_style_push_color(ctx, &s->button.text_normal, nk_rgba(255, 238, 205, 255));
+    nk_style_push_color(ctx, &s->button.text_hover, nk_rgba(255, 250, 230, 255));
+    nk_style_push_color(ctx, &s->button.text_active, nk_rgba(40, 20, 10, 255));
+    nk_style_push_color(ctx, &s->text.color, nk_rgba(250, 236, 210, 255));
+    nk_style_push_color(ctx, &s->checkbox.text_normal, nk_rgba(250, 236, 210, 255));
+    nk_style_push_color(ctx, &s->option.text_normal, nk_rgba(250, 236, 210, 255));
+    nk_style_push_float(ctx, &s->button.rounding, 4.0f);
 }
 
 /* Feeds one event to Nuklear (converting to render coordinates first). */

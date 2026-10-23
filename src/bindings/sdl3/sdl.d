@@ -201,6 +201,7 @@ const(char)* SDL_GetGPUDeviceDriver(void* device);
 bool SDL_GetRenderScale(SDL_Renderer* renderer, float* scaleX, float* scaleY);
 void SDL_DestroyRenderer(SDL_Renderer* renderer);
 bool SDL_SetRenderVSync(SDL_Renderer* renderer, int vsync);
+bool SDL_SetWindowFullscreen(SDL_Window* window, bool fullscreen);
 bool SDL_SetRenderScale(SDL_Renderer* renderer, float scaleX, float scaleY);
 bool SDL_SetRenderDrawColor(SDL_Renderer* renderer, ubyte r, ubyte g, ubyte b, ubyte a);
 bool SDL_RenderClear(SDL_Renderer* renderer);

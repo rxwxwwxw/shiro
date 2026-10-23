@@ -23,6 +23,7 @@ import gfx.td_overlay;
 import gfx.village_overlay;
 import gui.dialogue_ui;
 import gui.interior_ui;
+import gui.menus : drawMenus;
 import village.interior : Interiors;
 import gui.nuklear_ui;
 import story.dialogue;
@@ -312,7 +313,7 @@ private struct Viewer {
     }
 
     void setViewport(float w, float h) @nogc nothrow @safe {
-        immutable x0 = state.showPanel ? panelWidth : 0;
+        immutable x0 = scene == Scene.td && state.showPanel && state.debugView ? panelWidth : 0;
         camera.setViewport(x0, w - x0, h);
     }
 
@@ -485,6 +486,49 @@ private struct Viewer {
         return true;
     }
 
+    /// The title screen over a fresh, idle map that drifts slowly behind the menu.
+    void showMainMenu(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        scene = Scene.td;
+        state.story = false;
+        state.debugView = false;
+        state.screen = Screen.mainMenu;
+        state.buildKind = -1;
+        state.params.seed = (state.params.seed * 1664525u + 1013904223u) & int.max;
+        regenerate(sdl);
+        game.stop();
+        fx.reset(game);
+        camera.zoom *= 1.8f;
+    }
+
+    /// A tower defense map without the story; `debug_` opens it in the developer view.
+    void startBattle(SDL_Renderer* sdl, bool debug_) @nogc nothrow @trusted {
+        scene = Scene.td;
+        state.story = false;
+        state.screen = Screen.none;
+        state.debugView = debug_;
+        state.showPanel = true;
+        state.speed = 1;
+        runMods = RunModifiers.init;
+        state.params.seed = (state.params.seed * 1664525u + 1013904223u) & int.max;
+        regenerate(sdl);
+    }
+
+    /// The story from its first line (every flag and variable cleared), or a quick battle when
+    /// there is no story.
+    void newGame(SDL_Renderer* sdl) @nogc nothrow @trusted {
+        if (!state.storyAvailable) {
+            startBattle(sdl, false);
+            return;
+        }
+        foreach (id; 0 .. storyState.length)
+            storyState.set(id, 0);
+        state.screen = Screen.none;
+        state.debugView = false;
+        state.speed = 1;
+        if (!enterVillage(sdl, false, false))
+            startBattle(sdl, false);
+    }
+
     /// Out of the west gate: a tower defense map with the run the story earned.
     void enterTd(SDL_Renderer* sdl) @nogc nothrow @trusted {
         scene = Scene.td;
@@ -607,8 +651,10 @@ private struct Viewer {
                 villageQueue.push(VillageCommand(VillageCmd.cancel));
             else if (world.inside >= 0)
                 villageQueue.push(VillageCommand(VillageCmd.leave));
-            else
-                queue.push(CommandKind.quit);
+            else {
+                held[] = false;
+                state.screen = Screen.pause;
+            }
             break;
         case SDLK_TAB:
             if (down && world.inside >= 0 && !world.talking)
@@ -629,6 +675,23 @@ private struct Viewer {
 
     /// Camera and hotkeys; `uiCapturing` means the panel owns the mouse / keyboard this frame.
     void onEvent(ref const SDL_Event e, bool uiCapturing) @nogc nothrow @trusted {
+        // A menu takes all input: Esc backs out of it, the rest goes to its buttons.
+        if (state.screen != Screen.none) {
+            if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+                queue.push(CommandKind.quit);
+            else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE && !e.key.repeat) {
+                if (state.screen == Screen.settings)
+                    state.screen = state.settingsFrom;
+                else if (state.screen == Screen.pause)
+                    state.screen = Screen.none;
+            } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                mouseX = e.motion.x;
+                mouseY = e.motion.y;
+            }
+            dragging = false;
+            clickPending = false;
+            return;
+        }
         if (scene == Scene.village) {
             switch (e.type) {
             case SDL_EVENT_QUIT:
@@ -716,7 +779,7 @@ private struct Viewer {
                 else if (state.selCol >= 0)
                     state.selCol = state.selRow = -1;
                 else
-                    queue.push(CommandKind.quit);
+                    state.screen = Screen.pause;
                 break;
             case SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6:
                 immutable k = cast(int)(e.key.key - SDLK_1);
@@ -774,7 +837,8 @@ private struct Viewer {
                 queue.push(CommandKind.rebuildMesh);
                 break;
             case SDLK_TAB:
-                state.showPanel = !state.showPanel;
+                state.debugView = !state.debugView;
+                state.showPanel = true;
                 break;
             case SDLK_W, SDLK_UP:
                 camera.pan(0, step);
@@ -967,7 +1031,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         return 1;
     v.session = created.value;
     v.state.params = cfg.params;
-    v.state.showPanel = !cfg.hasScreenshot;
+    v.state.showPanel = !cfg.hasScreenshot || cfg.debugView;
     v.state.bot = cfg.bot;
 
     float viewW = 0, viewH = 0;
@@ -980,7 +1044,14 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     }
 
     updateViewport();
-    if (cfg.village && v.loadStory(cfg)) {
+    immutable menu = cfg.menu || (!cfg.sceneGiven && !cfg.hasScreenshot && cfg.bench == 0
+            && !cfg.hasTalk && !cfg.hasEnter);
+    v.state.debugView = cfg.debugView;
+    if (menu) {
+        v.state.storyAvailable = v.loadStory(cfg);
+        v.showMainMenu(ren.handle);
+    } else if (cfg.village && v.loadStory(cfg)) {
+        v.state.storyAvailable = true;
         v.villageSeed = cfg.params.seed;
         if (!v.enterVillage(ren.handle, false, false))
             return 1;
@@ -1042,6 +1113,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     immutable freq = cast(double)SDL_GetPerformanceFrequency();
     ulong last = SDL_GetPerformanceCounter();
     bool firstFrame = true;
+    int shotFrames;
     bool animating;
     ulong simLast = SDL_GetPerformanceCounter();
     while (v.running) {
@@ -1050,7 +1122,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         // Idle frames cost nothing: sleep until an event arrives (a screenshot run never waits).
         // While the game runs, frames come as fast as vsync allows.
         bool got = cfg.hasScreenshot || v.gameRunning || v.scene == Scene.village
-            ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e, animating ? 120 : 500);
+            || v.state.screen == Screen.mainMenu ? SDL_PollEvent(&e) : SDL_WaitEventTimeout(&e, animating ? 120 : 500);
         immutable woke = got || firstFrame || animating;
         firstFrame = false;
         if (!woke)
@@ -1060,18 +1132,21 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
             v.onEvent(e, capturing);
             got = SDL_PollEvent(&e);
         }
-        immutable wasPanel = v.state.showPanel;
+        immutable wasPanel = v.state.showPanel, wasDebug = v.state.debugView;
         if (v.scene == Scene.td)
             v.updatePicking(capturing);
         drawPanel(ui, v.state, v.queue, v.gameQueue, v.game, *v.session, v.mesh, v.haveModel, viewH);
-        if (v.scene == Scene.village) {
+        if (v.scene == Scene.td)
+            drawHud(ui, v.state, v.queue, v.gameQueue, v.game, viewW, viewH);
+        if (v.scene == Scene.village && v.state.screen == Screen.none) {
             if (cfg.hasScreenshot)
                 v.dialogue.skipTyping(v.world);
             v.interior.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
             v.dialogue.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
         }
 
-        bool screenshot = cfg.hasScreenshot;
+        // A --screenshot run waits a few frames: Nuklear lays new windows out on their first one.
+        bool screenshot = cfg.hasScreenshot && ++shotFrames >= 3;
         CommandKind cmd;
         while (v.queue.pop(cmd)) {
             final switch (cmd) {
@@ -1084,6 +1159,22 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 break;
             case CommandKind.returnToVillage:
                 v.returnFromTd(ren.handle);
+                break;
+            case CommandKind.newGame:
+                v.newGame(ren.handle);
+                break;
+            case CommandKind.quickBattle:
+                v.startBattle(ren.handle, false);
+                break;
+            case CommandKind.debugMap:
+                v.startBattle(ren.handle, true);
+                break;
+            case CommandKind.mainMenu:
+                v.showMainMenu(ren.handle);
+                break;
+            case CommandKind.applyDisplay:
+                SDL_SetWindowFullscreen(window.handle, v.state.fullscreen);
+                SDL_SetRenderVSync(ren.handle, v.state.vsync ? 1 : 0);
                 break;
             case CommandKind.rebuildMesh:
                 v.rebuildMesh(ren.handle);
@@ -1099,14 +1190,20 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 break;
             }
         }
+        drawMenus(ui, v.state, v.queue, v.scene == Scene.village, v.haveModel, viewW, viewH);
         updateViewport();
-        if (wasPanel != v.state.showPanel)
+        if (wasPanel != v.state.showPanel || wasDebug != v.state.debugView)
             v.fitView();
         {
             immutable now = SDL_GetPerformanceCounter();
             double sdt = (now - simLast) / freq;
             simLast = now;
             sdt = sdt > 0.25 ? 0.25 : sdt;
+            // Menus pause the world; the title screen's map drifts slowly behind it.
+            if (v.state.screen == Screen.mainMenu)
+                v.camera.pan(cast(float)(-6 * sdt), 0);
+            if (v.state.screen != Screen.none)
+                sdt = 0;
             if (v.scene == Scene.village) {
                 v.stepVillage(cfg.hasScreenshot ? 0 : sdt);
                 v.dialogue.update(v.world, cast(float)sdt);

@@ -159,34 +159,50 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
     nk_layout_row_dynamic(ctx, 18, 1);
     nk_label(ctx, "Build (1-6, right click cancels)", NK_TEXT_LEFT);
     nk_layout_row_dynamic(ctx, 24, 2);
-    foreach (k; 0 .. numTowerKinds) {
-        const def = &towerStats(cast(TowerKind)k, Stage.lv1);
-        char[48] buf = void;
-        snprintf(buf.ptr, buf.length, st.buildKind == k ? "> %d %.*s %d <" : "%d %.*s %d", k + 1,
-                cast(int)def.name.length, def.name.ptr, def.cost);
-        immutable locked = (g.modifiers.lockedKinds & (1 << k)) != 0;
-        immutable off = locked || g.gold < def.cost;
-        if (locked) {
-            if (st.buildKind == k)
-                st.buildKind = -1;
-            snprintf(buf.ptr, buf.length, "%d %.*s (locked)", k + 1, cast(int)def.name.length, def.name.ptr);
-            if (nk_widget_is_hovered(ctx)) {
-                const hint = unlockHint(cast(TowerKind)k);
-                nk_tooltip(ctx, hint !is null ? hint : "Not unlocked yet");
-            }
-        }
-        if (off)
-            nk_widget_disable_begin(ctx);
-        if (nk_button_label(ctx, buf.ptr))
-            st.buildKind = st.buildKind == k ? -1 : k;
-        if (off)
-            nk_widget_disable_end(ctx);
-    }
+    foreach (k; 0 .. numTowerKinds)
+        buildButton(ctx, st, g, k);
     if (st.errorTimer > 0 && st.lastError > 0 && st.lastError < errorText.length) {
         nk_layout_row_dynamic(ctx, 16, 1);
         nk_label_colored(ctx, errorText[st.lastError], NK_TEXT_LEFT, nk_color(255, 120, 100, 255));
     }
 
+    selectionInfo(ctx, st, gq, g);
+}
+
+/// Build button for tower kind `k`: disabled when locked (tooltip: where to unlock it) or too
+/// dear; otherwise the tooltip tells what the tower does.
+private void buildButton(nk_context* ctx, ref ViewerState st, ref const Game g, int k) @nogc nothrow @trusted {
+    const def = &towerStats(cast(TowerKind)k, Stage.lv1);
+    char[48] buf = void;
+    snprintf(buf.ptr, buf.length, st.buildKind == k ? "> %d %.*s %d <" : "%d %.*s %d", k + 1,
+            cast(int)def.name.length, def.name.ptr, def.cost);
+    immutable locked = (g.modifiers.lockedKinds & (1 << k)) != 0;
+    immutable off = locked || g.gold < def.cost;
+    if (locked) {
+        if (st.buildKind == k)
+            st.buildKind = -1;
+        snprintf(buf.ptr, buf.length, "%d %.*s (locked)", k + 1, cast(int)def.name.length, def.name.ptr);
+    }
+    if (nk_widget_is_hovered(ctx)) {
+        char[96] tip = void;
+        const hint = unlockHint(cast(TowerKind)k);
+        if (locked)
+            snprintf(tip.ptr, tip.length, "%s", hint !is null ? hint : "Not unlocked yet".ptr);
+        else
+            snprintf(tip.ptr, tip.length, "%.*s%s", cast(int)def.blurb.length, def.blurb.ptr,
+                    g.gold < def.cost ? " (not enough gold)".ptr : "".ptr);
+        nk_tooltip(ctx, tip.ptr);
+    }
+    if (off)
+        nk_widget_disable_begin(ctx);
+    if (nk_button_label(ctx, buf.ptr))
+        st.buildKind = st.buildKind == k ? -1 : k;
+    if (off)
+        nk_widget_disable_end(ctx);
+}
+
+/// The selected tower (stats, targeting, upgrades, sell) or special tile.
+private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq, ref const Game g) @nogc nothrow @trusted {
     const t = g.towerAt(st.selCol, st.selRow);
     if (t is null) {
         immutable sp = g.board.special(st.selCol, st.selRow);
@@ -200,8 +216,9 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
     }
     const cur = &towerStats(t.kind, t.stage);
     nk_layout_row_dynamic(ctx, 18, 1);
-    labelf(ctx, "%.*s  Lv %d/%d  (%.*s)", cast(int)cur.name.length, cur.name.ptr, tierOf(t.stage),
-            maxTier, cast(int)cur.blurb.length, cur.blurb.ptr);
+    labelf(ctx, "%.*s   Lv %d/%d", cast(int)cur.name.length, cur.name.ptr, tierOf(t.stage), maxTier);
+    nk_layout_row_dynamic(ctx, 16, 1);
+    labelf(ctx, "%.*s", cast(int)cur.blurb.length, cur.blurb.ptr);
     nk_layout_row_dynamic(ctx, 16, 1);
     statsLine(ctx, g, *t);
     if (t.kind != TowerKind.mine) {
@@ -341,7 +358,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
         ref const Game game, ref const MapSession session, ref const MapMesh mesh, bool haveModel, float viewHeight) @nogc nothrow @trusted {
     auto ctx = ui.ctx;
     nk_input_end(ctx);
-    if (!st.showPanel)
+    if (!st.showPanel || !st.debugView)
         return;
     scope (exit)
         nk_end(ctx);
@@ -373,7 +390,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     nk_layout_row_dynamic(ctx, 16, 1);
     nk_label(ctx, "Drag: pan   Wheel: zoom   Click: select", NK_TEXT_LEFT);
     nk_label(ctx, "U upgrade  Q/E branch  Del sell  T target", NK_TEXT_LEFT);
-    nk_label(ctx, "R: new map  F: fit  Tab: panel  Esc: cancel/quit", NK_TEXT_LEFT);
+    nk_label(ctx, "R: new map  F: fit  Tab: debug panel  Esc: menu", NK_TEXT_LEFT);
     cast(void)p;
 }
 
@@ -502,4 +519,118 @@ private void statsPanel(nk_context* ctx, ref const ViewerState st, ref const Map
     labelf(ctx, "Detail: %s (quality %.0f%%)", lodNames[mesh.lod], mesh.quality * 100);
     labelf(ctx, "Cached %zu verts, %.1f MB", mesh.vertexCount, mesh.bytes / (1024.0 * 1024.0));
     labelf(ctx, "%.0f fps, %zu verts drawn", st.fps, st.drawnVerts);
+}
+
+private bool hudWindow(nk_context* ctx, const(char)* name, float x, float y, float w, float h) @nogc nothrow @trusted {
+    nk_window_set_bounds(ctx, name, nk_rect(x, y, w, h));
+    if (nk_begin(ctx, name, nk_rect(x, y, w, h), NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR))
+        return true;
+    nk_end(ctx);
+    return false;
+}
+
+/// The player's view of a tower defense run: a status bar on top, the build bar at the bottom,
+/// a card for the selected tower, and a banner when the run is over. `menuOpen`: a menu covers
+/// the game, so only the status bar is drawn (no buttons that would act under it).
+void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref GameQueue gq,
+        ref const Game g, float viewW, float viewH) @nogc nothrow @trusted {
+    auto ctx = ui.ctx;
+    if (!g.active || st.debugView || st.screen != Screen.none)
+        return;
+    immutable over = g.status == GameStatus.lost || g.status == GameStatus.won;
+    shiro_nk_game_style(ctx, 1);
+    scope (exit)
+        shiro_nk_game_style(ctx, 0);
+
+    // Status bar.
+    immutable tw = viewW - 20 < 820 ? viewW - 20 : 820;
+    if (hudWindow(ctx, "hud_top", (viewW - tw) * 0.5f, 8, tw, 46)) {
+        nk_layout_row_dynamic(ctx, 28, 6);
+        labelf(ctx, "Gold  %d", g.gold);
+        labelf(ctx, "Lives  %d", g.lives);
+        final switch (g.status) {
+        case GameStatus.waiting:
+            labelf(ctx, "Wave %d/%d in %ds", g.waveNo + 1, g.waveLimit,
+                    (g.countdown + ticksPerSecond - 1) / ticksPerSecond);
+            break;
+        case GameStatus.wave:
+            labelf(ctx, "Wave %d/%d: %d left", g.waveNo, g.waveLimit, g.creepsAlive + g.pendingSpawns);
+            break;
+        case GameStatus.lost:
+            nk_label_colored(ctx, "Defeat", NK_TEXT_LEFT, nk_color(255, 90, 80, 255));
+            break;
+        case GameStatus.won:
+            nk_label_colored(ctx, "Victory", NK_TEXT_LEFT, nk_color(120, 230, 120, 255));
+            break;
+        }
+        if (g.status != GameStatus.waiting)
+            nk_widget_disable_begin(ctx);
+        if (nk_widget_is_hovered(ctx))
+            nk_tooltip(ctx, "Call the next wave early (Space)");
+        if (nk_button_label(ctx, "Next wave"))
+            gq.push(GameCommand(CommandType.startWave));
+        if (g.status != GameStatus.waiting)
+            nk_widget_disable_end(ctx);
+        static immutable char*[4] speedNames = ["Paused", "Speed 1x", "Speed 2x", "Speed 3x"];
+        if (nk_widget_is_hovered(ctx))
+            nk_tooltip(ctx, "Click to change speed (P pauses)");
+        if (nk_button_label(ctx, speedNames[st.speed]))
+            st.speed = (st.speed + 1) % 4;
+        if (nk_button_label(ctx, "Menu"))
+            st.screen = Screen.pause;
+        nk_end(ctx);
+    }
+    // The stage line sits under the bar while a reveal is pending.
+    if (g.board.plan.enabled && g.board.stage + 1 < g.board.numStages && hudWindow(ctx, "hud_stage",
+            (viewW - 300) * 0.5f, 58, 300, 26)) {
+        nk_layout_row_dynamic(ctx, 16, 1);
+        labelf(ctx, "More of the map opens after wave %d", (g.board.stage + 1) * g.wavesPerStage);
+        nk_end(ctx);
+    }
+
+    // Build bar.
+    immutable bw = viewW - 20 < 760 ? viewW - 20 : 760;
+    if (!over && hudWindow(ctx, "hud_build", (viewW - bw) * 0.5f, viewH - 58, bw, 50)) {
+        nk_layout_row_dynamic(ctx, 32, numTowerKinds);
+        foreach (k; 0 .. numTowerKinds)
+            buildButton(ctx, st, g, k);
+        nk_end(ctx);
+    }
+    if (st.errorTimer > 0 && st.lastError > 0 && st.lastError < errorText.length && hudWindow(ctx,
+            "hud_error", (viewW - 320) * 0.5f, viewH - 94, 320, 30)) {
+        nk_layout_row_dynamic(ctx, 18, 1);
+        nk_label_colored(ctx, errorText[st.lastError], NK_TEXT_CENTERED, nk_color(255, 120, 100, 255));
+        nk_end(ctx);
+    }
+
+    // Selected tower or special tile.
+    immutable sp = g.board.special(st.selCol, st.selRow);
+    if (!over && (g.towerAt(st.selCol, st.selRow) !is null || sp != SpecialKind.none)) {
+        immutable cw = 320.0f, ch = g.towerAt(st.selCol, st.selRow) !is null ? 270.0f : 50.0f;
+        if (hudWindow(ctx, "hud_card", viewW - cw - 10, viewH - 68 - ch, cw, ch)) {
+            selectionInfo(ctx, st, gq, g);
+            nk_end(ctx);
+        }
+    }
+
+    // End of the run.
+    if (over && hudWindow(ctx, "hud_end", (viewW - 340) * 0.5f, (viewH - 170) * 0.5f, 340, 170)) {
+        immutable won = g.status == GameStatus.won;
+        shiro_nk_use_font(ctx, 2);
+        nk_layout_row_dynamic(ctx, 40, 1);
+        nk_label_colored(ctx, won ? "Victory!" : "Defeat", NK_TEXT_CENTERED, won ? nk_color(140, 235,
+                140, 255) : nk_color(255, 110, 100, 255));
+        shiro_nk_use_font(ctx, 0);
+        nk_layout_row_dynamic(ctx, 18, 1);
+        labelf(ctx, won ? "All %d waves held." : "The road fell on wave %d.", won ? g.waveLimit : g.waveNo);
+        nk_layout_row_dynamic(ctx, 32, 2);
+        if (st.story) {
+            if (nk_button_label(ctx, "Return to the village"))
+                q.push(CommandKind.returnToVillage);
+        } else if (nk_button_label(ctx, "New map (R)"))
+            q.push(CommandKind.regenerate);
+        if (nk_button_label(ctx, "Main menu"))
+            q.push(CommandKind.mainMenu);
+        nk_end(ctx);
+    }
 }

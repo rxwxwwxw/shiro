@@ -15,7 +15,25 @@ enum CommandKind : ubyte {
     screenshot,
     quit,
     /// Leave tower defense for the village (the run counts as lost unless it was won).
-    returnToVillage
+    returnToVillage,
+    /// Main menu: the story from the start (or a quick battle without one).
+    newGame,
+    /// A tower defense map with no story attached.
+    quickBattle,
+    /// The developer view: a tower defense map with the generation and debug panel.
+    debugMap,
+    /// Back to the main menu (the current run is dropped).
+    mainMenu,
+    /// Fullscreen / vsync changed in the settings.
+    applyDisplay
+}
+
+/// Full-screen menus over the game. While one is up the game is paused and takes no input.
+enum Screen : ubyte {
+    none,
+    mainMenu,
+    pause,
+    settings
 }
 
 /// Fixed-capacity FIFO. Duplicate pending commands collapse into one.
@@ -131,4 +149,17 @@ struct ViewerState {
     size_t drawnVerts;
     /// A village story is running: tower defense runs start from and return to it.
     bool story;
+    /// A story file loaded, so New game can start it.
+    bool storyAvailable;
+
+    /// Menu on screen, where Back from the settings returns to, and the open settings tab.
+    Screen screen;
+    Screen settingsFrom;
+    int settingsTab;
+    /// Developer view: the side panel with generation, tile and stats sections.
+    bool debugView;
+    bool fullscreen;
+    bool vsync = true;
+    /// Audio is not implemented; the settings show these disabled.
+    float masterVolume = 0.8f, musicVolume = 0.6f, effectsVolume = 0.8f;
 }

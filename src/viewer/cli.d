@@ -46,6 +46,9 @@ struct ViewerConfig {
     int ticks;
     /// Start in the village hub (the story); false: straight into tower defense as before.
     bool village = true;
+    /// --scene was given (else the title menu opens, unless this is a screenshot or bench run);
+    /// `menu`: --scene menu; `debugView`: --scene debug (tower defense with the developer panel).
+    bool sceneGiven, menu, debugView;
     /// Story file (NUL-terminated); empty: assets/story/village.json.
     char[1024] story = 0;
     bool hasStory;
@@ -82,7 +85,7 @@ immutable string usage = "usage: shiro_viewer [options]
   --flat                 flat-shaded shapes instead of the Hex-Map-WFC models
   --bot                  let the scripted bot build and upgrade towers
   --ticks N              advance the game N ticks (30 per second) before the first frame
-  --scene village|td     start in the village hub (default) or straight in tower defense
+  --scene NAME           menu (default), village, td, or debug (td with the developer panel)
   --story PATH           story file for the village (default assets/story/village.json)
   --talk ID              open a conversation with villager ID at start (e.g. elder)
   --enter PLACE          step into PLACE's building at start (e.g. smithy)
@@ -263,10 +266,16 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             cfg.selRow = row;
             break;
         case "--scene":
+            cfg.sceneGiven = true;
             if (val == "village")
                 cfg.village = true;
             else if (val == "td")
                 cfg.village = false;
+            else if (val == "debug") {
+                cfg.village = false;
+                cfg.debugView = true;
+            } else if (val == "menu")
+                cfg.menu = true;
             else
                 return R.err(CliError.badScene);
             break;
@@ -366,6 +375,11 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
 
 @nogc nothrow @safe unittest {
     // Errors.
+    immutable string[2] dbg = ["--scene", "debug"];
+    auto d = parseArgs(dbg[]);
+    assert(d.isOk && d.value.sceneGiven && d.value.debugView && !d.value.village);
+    immutable string[2] men = ["--scene", "menu"];
+    assert(parseArgs(men[]).value.menu);
     immutable string[1] help = ["--help"];
     assert(parseArgs(help[]).error == CliError.help);
     immutable string[2] unk = ["--bogus", "1"];
