@@ -234,6 +234,11 @@ struct MapMesh {
         clearCache();
         free(chunks);
         chunks = null;
+        // A new map starts from full detail: the old map's timings (or the stall of generating
+        // this one) must not leave the adaptive quality pinned low.
+        quality = 1.0f;
+        drawMsAvg = frameMsAvg = 0;
+        recoverAt = 0;
         sess = &s;
         opts = opt;
         glb = opt.textured ? model : null;
