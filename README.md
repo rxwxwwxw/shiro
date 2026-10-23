@@ -156,6 +156,19 @@ bin/shiro_viewer --cols 120 --rows 60 --screenshot map.bmp   # render one frame 
 
 Controls: drag to pan, wheel or `+`/`-` to zoom, `R` new seed, `F` fit, `O` cell outlines, `Tab` toggle panel, `Esc` quit.
 
+The viewer starts in the village hub (below); add `--scene td` to go straight to a tower defense map, as the map examples above intend.
+
+### The village
+
+Làng Sương is a seeded WFC village (`src/village/`): a west gate, a plaza with a well, a đình hall, a market, a temple and a smithy. These are pinned as anchors, roads link them, and the terrain around them is generated fresh for each `--seed`. Walk with `WASD` or the arrow keys and talk with `E` (also `Space` / `Enter`). `1`-`6` pick a choice, and `Esc` leaves a conversation. The gate stays shut until the elder agrees. Walking out of it starts a tower defense run shaped by your choices: the priestess can unlock tesla towers or weaken creeps, and the smith can unlock flame towers or give gold. When the run ends, `Enter` (or the panel button) brings you home to a scene that depends on how it went.
+
+The story is data: `assets/story/village.json` (speakers, NPC homes, dialogue nodes with conditions and effects, triggers), compiled by `src/story/`. Art comes from `scripts/blender/village_props.py` (props) and `village_chars.py` (walk sheets, portraits, standing figures); every piece is optional.
+
+```bash
+bin/shiro_viewer --seed 3 --talk elder --screenshot talk.bmp   # open a conversation and render it
+bin/shiro_viewer --story my_story.json                         # play another story file
+```
+
 ### Playing tower defense
 
 Every map with roads is a game. You start with 300 gold and 20 lives, and there are 30 waves. A wave starts when its countdown ends; calling it early (`Space`) pays a gold for each second skipped.
@@ -183,4 +196,4 @@ Game keys:
 - `Del` sells for 70%; `T` cycles targeting (first / strongest / closest).
 - `P` pauses; `,` / `.` change speed (1-3x); `B` lets the scripted bot play.
 
-`bin/shiro_viewer --bot --ticks 6000 --screenshot td.bmp` renders a bot game partway through. The rules live in `src/td/` (headless and deterministic). `make test` or `tests/run_tests.sh` plays whole bot games, and `make bench-td-tick` or `benchmarks/bench_td_tick.d` times the tick. The project can be built via `make` on macOS, Linux, and Windows 10, or using the platform scripts in `scripts/`.
+`bin/shiro_viewer --scene td --bot --ticks 6000 --screenshot td.bmp` renders a bot game partway through. The rules live in `src/td/` (headless and deterministic). `make test` or `tests/run_tests.sh` plays whole bot games, and `make bench-td-tick` or `benchmarks/bench_td_tick.d` times the tick. The project can be built via `make` on macOS, Linux, and Windows 10, or using the platform scripts in `scripts/`.

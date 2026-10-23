@@ -54,6 +54,9 @@ struct RouteParams {
     int wallDepth = 1;
     /// Bias WFC toward natural walls (cliffs, rivers, coast) beside roads.
     bool flankTerrain = true;
+    /// Roads must be walled in so creeps cannot leave them (off: open scene maps like the
+    /// village, where leaving the road is fine).
+    bool walled = true;
 }
 
 /// Planned road network: exits per cell, endpoints, connectivity and route spans.

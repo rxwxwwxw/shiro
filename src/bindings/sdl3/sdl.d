@@ -58,6 +58,7 @@ enum : uint {
     SDL_EVENT_WINDOW_RESIZED = 0x206,
     SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED = 0x207,
     SDL_EVENT_WINDOW_MOUSE_LEAVE = 0x20D,
+    SDL_EVENT_WINDOW_FOCUS_LOST = 0x20F,
     SDL_EVENT_WINDOW_CLOSE_REQUESTED = 0x210,
     SDL_EVENT_KEY_DOWN = 0x300,
     SDL_EVENT_KEY_UP = 0x301,
@@ -76,6 +77,7 @@ enum SDL_Keymod SDL_KMOD_SHIFT = 0x0003;
 enum : SDL_Keycode {
     SDLK_BACKSPACE = 0x08,
     SDLK_TAB = 0x09,
+    SDLK_RETURN = 0x0d,
     SDLK_SPACE = 0x20,
     SDLK_COMMA = 0x2c,
     SDLK_PERIOD = 0x2e,
@@ -225,6 +227,10 @@ bool SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const(SDL_F
         const(SDL_FRect)* dstrect);
 SDL_Surface* SDL_LoadSurface(const(char)* file);
 bool SDL_GetTextureSize(SDL_Texture* texture, float* w, float* h);
+bool SDL_SetTextureColorModFloat(SDL_Texture* texture, float r, float g, float b);
+bool SDL_SetTextureAlphaModFloat(SDL_Texture* texture, float alpha);
+bool SDL_RenderFillRect(SDL_Renderer* renderer, const(SDL_FRect)* rect);
+bool SDL_RenderRect(SDL_Renderer* renderer, const(SDL_FRect)* rect);
 bool SDL_SetRenderTextureAddressMode(SDL_Renderer* renderer, int uMode, int vMode);
 enum int SDL_TEXTURE_ADDRESS_AUTO = 0, SDL_TEXTURE_ADDRESS_WRAP = 2;
 bool SDL_WaitEventTimeout(SDL_Event* event, int timeoutMS);

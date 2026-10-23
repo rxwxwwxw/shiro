@@ -11,6 +11,7 @@ import core.stdc.stdlib : free, qsort, realloc;
 import gfx.camera;
 import gfx.hex_mesh : MapMesh;
 import gfx.iso : IsoPoint, levelStep, rowPitch, squash;
+import gfx.sprites : spriteAnchor, spriteCell, spriteCols, spriteFacing, spriteFrames, spriteIndex, spriteSpan;
 import td.defs;
 import td.game;
 
@@ -52,11 +53,7 @@ immutable CreepLook[numCreepKinds] creepLooks = [
     CreepLook(0.72f, SDL_FColor(0.92f, 0.28f, 0.30f, 1), SDL_FColor(0.38f, 0.06f, 0.10f, 1)) // boss
 ];
 
-/// Layout of assets/sprites/creeps.png (built by scripts/blender/td_creeps.py): per creep kind, 8
-/// facings x 4 walk frames of `spriteCell`-pixel squares, `spriteCols` to a row. A square spans
-/// `spriteSpan` iso units with the creep's ground point centered, `spriteAnchor` of the way down.
-enum int spriteCell = 128, spriteCols = 16, spriteFacings = 8, spriteFrames = 4;
-enum float spriteSpan = 2.0f, spriteAnchor = 0.75f;
+// assets/sprites/creeps.png follows the shared atlas layout of gfx.sprites (per creep kind).
 
 /// What the overlay should highlight besides the game itself.
 struct OverlayInput {
@@ -390,17 +387,13 @@ struct TdOverlay {
     /// effects as a color wash.
     private void drawSprite(ref const Creep c, IsoPoint ground, float x, float y, float t) @nogc nothrow @trusted {
         immutable gx = (c.x - c.px) * isoPerX, gy = -(c.y - c.py) * isoPerY;
-        int facing = 0;
-        if (gx * gx + gy * gy > 1e-8f) {
-            facing = cast(int)(atan2f(gy, gx) * (spriteFacings / 6.2831853f) + spriteFacings + 0.5f);
-            facing %= spriteFacings;
-        }
+        immutable facing = spriteFacing(gx, gy);
         int frame = 0;
         if (c.stunTicks == 0) {
             immutable rate = c.slowTicks > 0 ? 8.0f * (100 - c.slowPct) / 100.0f : 8.0f;
             frame = cast(int)(t * rate + c.serial * 0.37f) % spriteFrames;
         }
-        immutable i = (c.kind * spriteFacings + facing) * spriteFrames + frame;
+        immutable i = spriteIndex(c.kind, facing, frame);
         immutable u0 = (i % spriteCols) * spriteCell / atlasW, v0 = (i / spriteCols) * spriteCell / atlasH;
         immutable size = spriteSpan * zoom;
         SDL_FColor tint = SDL_FColor(1, 1, 1, 1);

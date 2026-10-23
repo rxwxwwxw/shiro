@@ -69,11 +69,11 @@ if "%STATIC%"=="1" (
         set "LINK_STATIC=%PREFIX%\lib\libSDL3.a -L-luser32 -L-lgdi32 -L-lwinmm -L-limm32 -L-lole32 -L-loleaut32 -L-lversion -L-luuid -L-ladvapi32 -L-lsetupapi -L-lshell32 -L-lcfgmgr32"
     )
     ldc2 -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app -i=core.bitset -i=core.noise -i=core.random ^
-        -i=core.result -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w %OPT% %SAN% -od=build\obj src\app.d ^
+        -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w %OPT% %SAN% -od=build\obj src\app.d ^
         build\obj\nk_impl.obj build\obj\gpu_scene.obj !LINK_STATIC! -of=bin\shiro_viewer.exe
 ) else (
     ldc2 -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app -i=core.bitset -i=core.noise -i=core.random ^
-        -i=core.result -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w %OPT% %SAN% -od=build\obj src\app.d ^
+        -i=core.result -i=core.json -i=core.file -i=story -i=village -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w %OPT% %SAN% -od=build\obj src\app.d ^
         build\obj\nk_impl.obj build\obj\gpu_scene.obj -L-L"%PREFIX%\lib" -L-lSDL3 -of=bin\shiro_viewer.exe
     if exist "%PREFIX%\bin\SDL3.dll" (
         copy /y "%PREFIX%\bin\SDL3.dll" bin\ >nul

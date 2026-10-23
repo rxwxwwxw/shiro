@@ -13,7 +13,9 @@ enum CommandKind : ubyte {
     rebuildMesh,
     fitView,
     screenshot,
-    quit
+    quit,
+    /// Leave tower defense for the village (the run counts as lost unless it was won).
+    returnToVillage
 }
 
 /// Fixed-capacity FIFO. Duplicate pending commands collapse into one.
@@ -127,4 +129,6 @@ struct ViewerState {
     float errorTimer = 0;
     float fps = 0;
     size_t drawnVerts;
+    /// A village story is running: tower defense runs start from and return to it.
+    bool story;
 }

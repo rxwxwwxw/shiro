@@ -44,6 +44,19 @@ enum int maxRouteAttempts = 8;
 enum int maxRevealPlans = 24;
 /// Cells this close to a planned road take the road plan's tiles rather than the terrain's.
 enum int roadBand = 3;
+/// Cells this close to an anchor are left to WFC rather than the terrain noise, so forced flat
+/// ground can meet water or hills through proper coast and slope tiles.
+enum int anchorBand = 2;
+
+/// A hand-placed cell for scene maps such as the village: solved as flat grass (any level)
+/// unless a planned road crosses it, then given a fixed decoration after decorating.
+struct Anchor {
+    CubeCoord cell;
+    /// Stamped over the decorator's choice (DecoKind.none clears the cell).
+    Decoration deco;
+    /// false: only force flat ground and keep the decorator's choice.
+    bool stamp = true;
+}
 
 struct GenParams {
     Layout layout = Layout.rect;
@@ -62,6 +75,11 @@ struct GenParams {
     RouteParams routes;
     /// Start on a small window of the map and uncover the rest in stages (rect layout only).
     RevealParams reveal;
+    /// Road endpoints chosen by the caller (when it sets any source) instead of placed by
+    /// `routes.place`; ignored by reveal maps.
+    Endpoints pinned;
+    /// Cells forced flat and stamped with decorations. Borrowed for the `regenerate` call only.
+    const(Anchor)[] anchors;
 }
 
 struct MapSession {
@@ -73,6 +91,12 @@ struct MapSession {
     private GridCoord islandCenter;
     private RoadMasks roadMasks;
     private StateSet flankStates;
+    /// Flat grass at every level, the mask of anchored cells.
+    private StateSet flatStates;
+    /// Per cell of `anchorRect`: steps to the nearest anchor (0 = anchored, 255 = beyond
+    /// `anchorBand`); null without anchors.
+    private ubyte* anchored;
+    private MapRect anchorRect;
     private RoadNetwork network_;
     private NavMap navMap;
     private RevealPlan revealPlan;
@@ -109,8 +133,10 @@ struct MapSession {
         s.flankStates = s.roadMasks.allowed(0);
         foreach (lvl; 0 .. 5) {
             immutable id = r.stateId(tileIdByName("GRASS"), 0, lvl);
-            if (id >= 0)
+            if (id >= 0) {
                 s.flankStates.clear(id);
+                s.flatStates.set(id);
+            }
         }
         return Result!(MapSession*).ok(s);
     }
@@ -121,6 +147,7 @@ struct MapSession {
             return;
         auto r = s.rulesBuf;
         free(s.roadDist);
+        free(s.anchored);
         object.destroy!false(*s);
         free(r);
         free(s);
@@ -183,8 +210,11 @@ struct MapSession {
 
     // WFC constraints from the planned network (member delegates: no closure allocation).
     private const(StateSet)* maskFor(const CubeCoord c) @nogc nothrow @trusted {
+        immutable anchorDist = anchored !is null && anchorRect.contains(c) ? anchored[anchorRect.index(c)] : 255;
+        if (anchorDist == 0 && !(network_.allocated && network_.onNetwork(c)))
+            return &flatStates;
         const road = roadMaskFor(c);
-        if (!terrainField.allocated || nearNetwork(c))
+        if (!terrainField.allocated || nearNetwork(c) || anchorDist <= anchorBand)
             return road;
         const ter = terrainMasks.forClass(terrainField.classAt(c));
         if (road is null)
@@ -289,6 +319,51 @@ struct MapSession {
         return cubeDistance(CubeCoord.fromAxial(a.gq, a.gr), CubeCoord.fromAxial(b.gq, b.gr)) <= p.rings;
     }
 
+    /// Marks the anchored cells of `p` for `maskFor` (frees the marks when there are none).
+    private void markAnchors(ref const GenParams p, const MapRect rect) @nogc nothrow @trusted {
+        import core.stdc.stdlib : realloc;
+
+        if (p.anchors.length == 0) {
+            free(anchored);
+            anchored = null;
+            return;
+        }
+        anchorRect = rect;
+        anchored = cast(ubyte*)realloc(anchored, rect.cellCount);
+        auto queue = cast(uint*)malloc(rect.cellCount * uint.sizeof);
+        assert(anchored !is null && queue !is null, "anchor map allocation failed");
+        scope (exit)
+            free(queue);
+        anchored[0 .. rect.cellCount] = 255;
+        size_t head = 0, tail = 0;
+        foreach (ref a; p.anchors)
+            if (rect.contains(a.cell) && anchored[rect.index(a.cell)] != 0) {
+                anchored[rect.index(a.cell)] = 0;
+                queue[tail++] = cast(uint)rect.index(a.cell);
+            }
+        while (head < tail) {
+            immutable i = queue[head++];
+            if (anchored[i] >= anchorBand)
+                continue;
+            immutable c = rect.cellAt(i);
+            foreach (d; 0 .. numHexDirs) {
+                immutable nc = c.neighbor(cast(HexDir)d);
+                if (!rect.contains(nc) || anchored[rect.index(nc)] != 255)
+                    continue;
+                anchored[rect.index(nc)] = cast(ubyte)(anchored[i] + 1);
+                queue[tail++] = cast(uint)rect.index(nc);
+            }
+        }
+    }
+
+    /// True if an anchor puts a building on `c` (a linear scan: anchors are few and planning is cold).
+    private static bool blockedAnchor(ref const GenParams p, const CubeCoord c) @nogc nothrow pure @safe {
+        foreach (ref a; p.anchors)
+            if (a.cell == c)
+                return a.stamp && blocksGround(a.deco);
+        return false;
+    }
+
     /// True if the cell is part of the generated area (island layouts leave the rectangle's
     /// corners outside the cluster; those cells stay unsolved by design, not by failure).
     bool inMap(const CubeCoord c) const @nogc nothrow pure @safe {
@@ -320,6 +395,7 @@ struct MapSession {
             return Result!GenStats.err(EngineError.BufferOverflow);
 
         immutable t0 = MonoTime.currTime;
+        markAnchors(p, rect);
         if (p.terrain.enabled)
             terrainField.build(rect, p.terrain, p.seed);
         else
@@ -341,8 +417,9 @@ struct MapSession {
             if (routed) {
                 // Plan before touching the current map, so a failed plan keeps it.
                 immutable center = islandCenter;
-                scope InMapLookup inMap = (const CubeCoord c) @nogc nothrow => p.layout == Layout.rect
-                    || inIsland(c, p, center);
+                // Roads route around anchored buildings: to the planner they are off the map.
+                scope InMapLookup inMap = (const CubeCoord c) @nogc nothrow => (p.layout == Layout.rect
+                        || inIsland(c, p, center)) && !blockedAnchor(p, c);
                 auto field = BoundaryField(rect, inMap);
                 RevealPlan plan;
                 if (staged) {
@@ -355,7 +432,8 @@ struct MapSession {
                 bool planned = false;
                 foreach (_; 0 .. staged ? maxRevealPlans : 1) {
                     auto ep = staged ? placeStagedEndpoints(field, plan, p.routes.place, p.reveal.minDefensePath, rng)
-                        : placeEndpoints(field, p.routes.place, rng);
+                        : (p.pinned.numSources > 0
+                                ? Result!Endpoints.ok(p.pinned) : placeEndpoints(field, p.routes.place, rng));
                     if (!ep.isOk) {
                         planError = ep.error;
                         continue;
@@ -384,10 +462,11 @@ struct MapSession {
             } else {
                 network_ = RoadNetwork.init;
                 revealPlan = RevealPlan.init;
-                if (p.terrain.enabled)
+                if (p.terrain.enabled || p.anchors.length)
                     cons.mask = &maskFor;
             }
             lastParams = p;
+            lastParams.anchors = null;
             generated = true;
             routeAttempts = attempt + 1;
             tileMap = TileMap(rect);
@@ -404,11 +483,16 @@ struct MapSession {
             placePeaks();
             if (routed)
                 applyCorridors(decoMap, tileMap, network_, rulesBuf, p.routes.wallDepth, seed);
+            // A planned road wins over a building in its way (the caller checks what survived).
+            foreach (ref a; p.anchors)
+                if (a.stamp && rect.contains(a.cell) && !(blocksGround(a.deco)
+                        && network_.allocated && network_.onNetwork(a.cell)))
+                    decoMap.set(a.cell, a.deco);
             navMap.build(tileMap, decoMap, network_, rulesBuf);
             if (!routed)
                 break;
             routeReport = validateRoutes(navMap, tileMap, network_, roadMasks);
-            if (routeReport.ok && revealPlayable())
+            if ((p.routes.walled ? routeReport.ok : routeReport.okOpen) && revealPlayable())
                 break;
         }
         if (!generated)
@@ -637,4 +721,46 @@ version (unittest) {
     p.layout = Layout.island;
     p.rings = 1;
     assert(s.regenerate(p).isOk && !s.reveal.enabled);
+}
+
+@nogc nothrow unittest {
+    // Scene maps: pinned endpoints are used as given, anchored cells come out flat grass (or
+    // road where the planned road crosses them) with their stamped decorations.
+    auto s = MapSession.create().value;
+    scope (exit)
+        MapSession.release(s);
+    GenParams p;
+    p.cols = 36;
+    p.rows = 24;
+    p.radius = 5;
+    p.seed = 9;
+    p.routes.wallDepth = 0;
+    p.routes.flankTerrain = false;
+    p.routes.walled = false;
+    p.pinned.numSources = 1;
+    p.pinned.sources[0] = offsetToCube(4, 12);
+    p.pinned.numSinks = 1;
+    p.pinned.sinks[0] = offsetToCube(22, 12);
+    Anchor[24] anchors;
+    size_t n = 0;
+    CubeCoord[19] near = void;
+    immutable k = cubeCoordsInRadius(offsetToCube(22, 12), 2, near[]);
+    foreach (i; 0 .. k)
+        anchors[n++] = Anchor(near[i], Decoration.init);
+    anchors[0].deco = Decoration(DecoKind.village, VillageProp.well, HexDir.W, 0);
+    anchors[n++] = Anchor(offsetToCube(25, 8), Decoration(DecoKind.village, VillageProp.stiltHouse, HexDir.SW, 0));
+    p.anchors = anchors[0 .. n];
+    assert(s.regenerate(p).isOk && s.routeReport.okOpen);
+    assert(s.network.endpoints.sources[0] == offsetToCube(4, 12) && s.network.endpoints.sinks[0] == offsetToCube(22, 12));
+    assert(s.params.anchors.length == 0);
+    immutable grass = tileIdByName("GRASS");
+    foreach (ref a; anchors[0 .. n]) {
+        immutable id = s.tiles.get(a.cell);
+        assert(id >= 0);
+        assert(s.rules.states[id].tile == grass || s.network.onNetwork(a.cell));
+        assert(s.decorations.get(a.cell) == a.deco || (s.network.onNetwork(a.cell) && blocksGround(a.deco)));
+    }
+    // The open well stands on walkable ground; the house blocks it.
+    assert(s.nav.ground(near[0]) == false || s.decorations.get(near[0]).variant == VillageProp.well);
+    assert(!s.nav.ground(offsetToCube(25, 8)));
 }

@@ -26,8 +26,9 @@ struct NuklearContext {
 
     @disable this(this);
 
-    EngineError open(SDL_Window* win, SDL_Renderer* renderer, float scale) @nogc nothrow @trusted {
-        ctx = shiro_nk_init(win, renderer, scale);
+    /// `textFont`: a TTF for the dialogue text (null: the default font everywhere).
+    EngineError open(SDL_Window* win, SDL_Renderer* renderer, float scale, const(char)* textFont = null) @nogc nothrow @trusted {
+        ctx = shiro_nk_init(win, renderer, scale, textFont);
         return ctx is null ? EngineError.InitializationFailed : EngineError.None;
     }
 
@@ -74,10 +75,11 @@ private bool section(nk_context* ctx, const(char)* title, int id, bool open) @no
             ? nk_collapse_states.NK_MAXIMIZED : nk_collapse_states.NK_MINIMIZED, title, 0, id);
 }
 
-private immutable char*[11] errorText = [
-    "", "Outside the map", "Can't build there", "Already a tower there", "Mines go on gold veins only",
-    "Not enough gold", "No tower there", "Fully upgraded", "Not now", "Too many towers",
-    "Still in the fog"
+private immutable char*[12] errorText = [
+    "", "Outside the map", "Can't build there", "Already a tower there",
+    "Mines go on gold veins only", "Not enough gold",
+    "No tower there", "Fully upgraded", "Not now", "Too many towers", "Still in the fog",
+    "Not unlocked yet"
 ];
 
 private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
@@ -97,7 +99,7 @@ private void statsLine(nk_context* ctx, ref const Game g, ref const Tower t) @no
 }
 
 /// Gold, lives, waves, building and the selected tower.
-private void gamePanel(nk_context* ctx, ref ViewerState st, ref GameQueue gq, ref const Game g) @nogc nothrow @trusted {
+private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, ref GameQueue gq, ref const Game g) @nogc nothrow @trusted {
     if (!g.active) {
         nk_layout_row_dynamic(ctx, 16, 1);
         nk_label(ctx, "Turn on roads to play", NK_TEXT_LEFT);
@@ -120,12 +122,19 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref GameQueue gq, re
                 g.creepsAlive + g.pendingSpawns);
         break;
     case GameStatus.lost:
-        nk_label_colored(ctx, "Defeat! Press R for a new map", NK_TEXT_LEFT,
+        nk_label_colored(ctx, st.story
+                ? "Defeat! The road is lost" : "Defeat! Press R for a new map", NK_TEXT_LEFT,
                 nk_color(255, 90, 80, 255));
         break;
     case GameStatus.won:
         nk_label_colored(ctx, "Victory! All waves held", NK_TEXT_LEFT, nk_color(120, 230, 120, 255));
         break;
+    }
+    if (st.story) {
+        immutable over = g.status == GameStatus.lost || g.status == GameStatus.won;
+        nk_layout_row_dynamic(ctx, 26, 1);
+        if (nk_button_label(ctx, over ? "Return to the village (Enter)" : "Retreat to the village"))
+            q.push(CommandKind.returnToVillage);
     }
     nk_layout_row_dynamic(ctx, 24, 2);
     if (g.status != GameStatus.waiting)
@@ -296,6 +305,9 @@ private void tileInfo(nk_context* ctx, ref const ViewerState st, ref const MapSe
     case DecoKind.rock:
         nk_label(ctx, "Rock wall", NK_TEXT_LEFT);
         break;
+    case DecoKind.village:
+        nk_label(ctx, "Village building", NK_TEXT_LEFT);
+        break;
     }
     immutable nav = session.nav.get(c);
     labelf(ctx, "Ground %s, water %s", (nav & NavFlag.ground) ? "yes".ptr : "no".ptr,
@@ -327,7 +339,7 @@ void drawPanel(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, re
     auto p = &st.params;
 
     if (section(ctx, "Game", 1, true)) {
-        gamePanel(ctx, st, gq, game);
+        gamePanel(ctx, st, q, gq, game);
         nk_tree_pop(ctx);
     }
     if (section(ctx, "Tile", 2, false)) {

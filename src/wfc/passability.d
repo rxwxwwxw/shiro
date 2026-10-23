@@ -50,8 +50,7 @@ struct NavMap {
                 continue;
             immutable tile = rules.states[id].tile;
             ubyte f = 0;
-            immutable deco = decos.get(c).kind;
-            if (groundWalkable(tile) && !blocksGround(deco))
+            if (groundWalkable(tile) && !blocksGround(decos.get(c)))
                 f |= NavFlag.ground;
             if (swimmable(tile))
                 f |= NavFlag.water;
@@ -146,9 +145,24 @@ struct RouteReport {
     size_t reachableCells;
 
     bool ok() const @nogc nothrow pure @safe {
-        return sources > 0 && sourcesConnected == sources && sinksReached == sinks
-            && roadMismatches == 0 && roadMountains == 0 && leakCells == 0;
+        return okOpen && leakCells == 0;
     }
+
+    /// Valid apart from leaks: for open maps where walking off the road is allowed.
+    bool okOpen() const @nogc nothrow pure @safe {
+        return sources > 0 && sourcesConnected == sources && sinksReached == sinks
+            && roadMismatches == 0 && roadMountains == 0;
+    }
+}
+
+@nogc nothrow pure @safe unittest {
+    RouteReport r;
+    r.sources = r.sourcesConnected = r.sinks = r.sinksReached = 1;
+    assert(r.ok && r.okOpen);
+    r.leakCells = 3;
+    assert(!r.ok && r.okOpen);
+    r.roadMismatches = 1;
+    assert(!r.okOpen);
 }
 
 /// Checks that the generated map is playable: tiles match the planned roads, every source reaches

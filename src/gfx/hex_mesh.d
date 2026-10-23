@@ -21,7 +21,8 @@ import gfx.glb;
 import gfx.iso;
 import td.defs : numTowerKinds, SpecialKind, Stage, TowerKind;
 import td.game : Game, Tower;
-import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames, towerVariant;
+import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames,
+    numVillageProps, towerVariant, VillageProp, villagePropNames;
 import wfc.hex;
 import wfc.map_session : MapSession;
 import wfc.reveal : Window;
@@ -160,6 +161,8 @@ struct MapMesh {
     private const(GlbModel)* glb;
     /// Purpose-built tower models (assets/models/td-towers.glb), or null to reuse village buildings.
     private const(GlbModel)* towerGlb;
+    /// Village props (assets/models/village.glb), or null to use hex-terrain stand-ins.
+    private const(GlbModel)* villageGlb;
     private TexSet ts;
     private bool[numTiles] cliff, isCoast;
     private int texVariants = 1;
@@ -251,6 +254,8 @@ struct MapMesh {
             ts.resolve(*glb);
         if (glb !is null && towerGlb !is null)
             ts.resolveTowers(*towerGlb);
+        if (glb !is null && villageGlb !is null)
+            ts.resolveVillage(*villageGlb);
         foreach (i, ref t; tileList)
             cliff[i] = t.name.length >= 11 && t.name[0 .. 11] == "GRASS_CLIFF";
         foreach (i, ref t; tileList)
@@ -773,6 +778,10 @@ struct MapMesh {
             // Blue goal keep.
             addHouse(cx, cz, hc, 0.46f, 0.42f, 1.9f, 1.2f, Rgb(0.88f, 0.88f, 0.92f), Rgb(0.20f, 0.36f, 0.85f));
             break;
+        case DecoKind.village:
+            if (deco.variant < numVillageProps)
+                addVillageShape(cast(VillageProp)deco.variant, cx, cz, hc);
+            break;
         case DecoKind.rock:
             immutable rtop = 1.2f + deco.variant * 0.3f;
             immutable stone = Rgb(0.50f, 0.48f, 0.46f);
@@ -818,6 +827,39 @@ struct MapMesh {
     }
 
     /// Box with a gabled roof whose ridge runs along x; only the visible faces are emitted.
+    /// Flat-shape village prop for the untextured detail levels.
+    private void addVillageShape(VillageProp p, float cx, float cz, float hc) @nogc nothrow @safe {
+        static struct Shape {
+            float halfW, halfD, height, roof;
+            Rgb wall, roof_;
+        }
+
+        static immutable Shape[numVillageProps] shapes = [
+            // stilt house: dark timber under a tall thatch roof
+            Shape(0.42f, 0.34f, 1.1f, 1.0f, Rgb(0.45f, 0.30f, 0.18f), Rgb(0.80f, 0.66f, 0.38f)),
+            // dinh hall: long, red-tiled
+            Shape(0.62f, 0.40f, 1.0f, 0.9f, Rgb(0.70f, 0.52f, 0.34f), Rgb(0.72f, 0.24f, 0.18f)),
+            // temple: tall stepped stone
+            Shape(0.60f, 0.60f, 2.4f, 0.5f, Rgb(0.66f, 0.62f, 0.55f), Rgb(0.80f, 0.34f, 0.20f)),
+            // gate: red pillars with a dark lintel
+            Shape(0.50f, 0.10f, 1.6f, 0.3f, Rgb(0.75f, 0.20f, 0.15f), Rgb(0.30f, 0.20f, 0.15f)),
+            // market stall
+            Shape(0.34f, 0.26f, 0.7f, 0.4f, Rgb(0.60f, 0.44f, 0.28f), Rgb(0.90f, 0.75f, 0.35f)),
+            // lantern
+            Shape(0.06f, 0.06f, 0.9f, 0.2f, Rgb(0.35f, 0.22f, 0.14f), Rgb(0.95f, 0.30f, 0.15f)),
+            // palm
+            Shape(0.08f, 0.08f, 1.8f, 0.6f, Rgb(0.55f, 0.40f, 0.25f), Rgb(0.30f, 0.62f, 0.25f)),
+            // banana
+            Shape(0.10f, 0.10f, 1.0f, 0.7f, Rgb(0.45f, 0.55f, 0.25f), Rgb(0.40f, 0.72f, 0.30f)),
+            // paddy dike
+            Shape(0.70f, 0.08f, 0.15f, 0.05f, Rgb(0.50f, 0.42f, 0.30f), Rgb(0.45f, 0.60f, 0.30f)),
+            // well
+            Shape(0.22f, 0.22f, 0.4f, 0.3f, Rgb(0.60f, 0.58f, 0.55f), Rgb(0.45f, 0.30f, 0.20f))
+        ];
+        immutable sh = shapes[p];
+        addHouse(cx, cz, hc, sh.halfW, sh.halfD, sh.height, sh.roof, sh.wall, sh.roof_);
+    }
+
     private void addHouse(float cx, float cz, float hc, float halfW, float halfD, float height,
             float roof, Rgb wall, Rgb roofColor) @nogc nothrow @safe {
         immutable top = hc + height * 0.5f;
@@ -1080,6 +1122,12 @@ struct MapMesh {
         towerGlb = model;
     }
 
+    /// Uses village.glb (built by scripts/blender/village_props.py) for village props; call
+    /// before `setup`.
+    void setVillageModel(const(GlbModel)* model) @nogc nothrow @safe {
+        villageGlb = model;
+    }
+
     private static float towerScale(Stage s) @nogc nothrow pure @safe {
         return s == Stage.lv1 ? 0.82f : (s == Stage.lv2 ? 0.95f : 1.08f);
     }
@@ -1245,6 +1293,16 @@ struct MapMesh {
             addShadow(ts.buildings[townhall], cx, cz, baseY, 1.0f);
             addModel(ts.buildings[townhall], cx, baseY, cz, ka, 1, 1, blue, lvl);
             break;
+        case DecoKind.village:
+            if (deco.variant >= numVillageProps)
+                break;
+            ref const MeshRef vm = ts.village[deco.variant];
+            if (vm.valid) {
+                immutable va = dirAngle[deco.facing];
+                addShadow(vm, cx, cz, baseY, 1.0f);
+                addModel(vm, cx, baseY - (vm.lo[1] < 0 ? vm.lo[1] : 0), cz, va, 1, 1, white, lvl);
+            }
+            break;
         case DecoKind.rock:
             ref const MeshRef hl = ts.hills[(deco.variant + h) % 6];
             addModel(hl, cx, baseY - hl.lo[1], cz, deco.facing * (3.14159265f / 3), 1, 1, white, lvl, -hl.lo[1]);
@@ -1375,6 +1433,16 @@ private struct TexSet {
     MeshRef fort, henge, watchtower, mine, rockGold, rockLey;
     /// td-towers.glb per tower kind: levels 1-2, branch A, branch B.
     MeshRef[3][numTowerKinds] td;
+    /// Per VillageProp: village.glb when loaded, else the hex-terrain stand-in (may be empty).
+    MeshRef[numVillageProps] village;
+
+    void resolveVillage(ref const GlbModel g) @nogc nothrow @trusted {
+        foreach (i, ref n; villagePropNames) {
+            MeshRef m;
+            if (g.find(n[0], m))
+                village[i] = m;
+        }
+    }
 
     void resolveTowers(ref const GlbModel g) @nogc nothrow @trusted {
         static immutable string[3][numTowerKinds] names = [
@@ -1428,6 +1496,9 @@ private struct TexSet {
             g.find("mine", mine);
         g.find("rock_single_A", rockGold);
         g.find("rock_single_E", rockLey);
+        foreach (i, ref n; villagePropNames)
+            if (n[1].length)
+                g.find(n[1], village[i]);
     }
 }
 

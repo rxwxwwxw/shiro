@@ -31,13 +31,65 @@ enum DecoKind : ubyte {
     /// Creep goal (a road endpoint).
     sink,
     /// Rock wall beside a road on walkable non-flat ground.
-    rock
+    rock,
+    /// Hand-placed village prop (the variant is a `VillageProp`); only stamped by map anchors.
+    village
 }
 
-/// Decorations ground creeps cannot walk through.
+/// Village props, in the order of `villagePropNames`.
+enum VillageProp : ubyte {
+    stiltHouse,
+    dinhHall,
+    temple,
+    gate,
+    marketStall,
+    lantern,
+    palm,
+    banana,
+    paddyDike,
+    well
+}
+
+enum int numVillageProps = VillageProp.max + 1;
+
+/// Node names in assets/models/village.glb, and the hex-terrain.glb stand-in drawn when that
+/// model is missing (empty: draw nothing).
+immutable string[2][numVillageProps] villagePropNames = [
+    ["village_stilt_house", "building_home_A_yellow"],
+    ["village_dinh_hall", "building_townhall_yellow"], ["village_temple", "building_church_yellow"],
+    ["village_gate", ""], ["village_market_stall", "building_market_yellow"], [
+        "village_lantern", ""
+    ], ["village_palm", "tree_single_A"], ["village_banana", "tree_single_B"],
+    ["village_paddy_dike", ""], ["village_well", "building_well_yellow"]
+];
+
+/// Props the player walks through or over: the gate arch, lanterns and paddy dikes.
+bool villagePropBlocks(VillageProp p) @nogc nothrow pure @safe {
+    return p != VillageProp.gate && p != VillageProp.lantern && p != VillageProp.paddyDike;
+}
+
+/// Decorations ground creeps cannot walk through (every village prop counts, conservatively;
+/// the overload below knows which props are open).
 bool blocksGround(DecoKind k) @nogc nothrow pure @safe {
     return k == DecoKind.tree || k == DecoKind.building || k == DecoKind.windmill
-        || k == DecoKind.mountain || k == DecoKind.rock;
+        || k == DecoKind.mountain || k == DecoKind.rock || k == DecoKind.village;
+}
+
+bool blocksGround(const Decoration d) @nogc nothrow pure @safe {
+    if (d.kind == DecoKind.village)
+        return d.variant < numVillageProps && villagePropBlocks(cast(VillageProp)d.variant);
+    return blocksGround(d.kind);
+}
+
+@nogc nothrow pure @safe unittest {
+    assert(blocksGround(DecoKind.village) && !blocksGround(DecoKind.none));
+    assert(blocksGround(Decoration(DecoKind.village, VillageProp.stiltHouse, HexDir.E, 0)));
+    assert(!blocksGround(Decoration(DecoKind.village, VillageProp.gate, HexDir.E, 0)));
+    assert(!blocksGround(Decoration(DecoKind.village, VillageProp.lantern, HexDir.E, 0)));
+    assert(blocksGround(Decoration(DecoKind.tree, 0, HexDir.E, 0)));
+    // Village decorations survive packing (kind 9 still fits the 4-bit field).
+    immutable d = Decoration(DecoKind.village, VillageProp.well, HexDir.W, 0);
+    assert(Decoration.unpack(d.pack) == d);
 }
 
 /// One decoration slot per cell. Packs into 16 bits: kind(4) variant(4) facing(3) extra(3).
@@ -341,7 +393,7 @@ void applyCorridors(ref DecorationMap decos, ref const TileMap tiles, ref const 
             if (id < 0)
                 continue;
             immutable st = rules.states[id];
-            if (!groundWalkable(st.tile) || blocksGround(decos.get(w).kind))
+            if (!groundWalkable(st.tile) || blocksGround(decos.get(w)))
                 continue;
             immutable h = hash3(cast(uint)w.q, cast(uint)w.r, seed ^ 0x51ED27u);
             if (st.tile == 0)
@@ -480,8 +532,8 @@ unittest {
             case DecoKind.source:
             case DecoKind.sink:
             case DecoKind.rock:
-                assert(false,
-                        "corridor decorations need applyCorridors");
+            case DecoKind.village:
+                assert(false, "corridor decorations need applyCorridors");
             }
         }
     assert(grass > 0);
