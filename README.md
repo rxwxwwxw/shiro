@@ -16,11 +16,14 @@ Agents working in this codebase must analyze the existing JavaScript reference i
 
 ```
 .
+├── Makefile                       # Cross-platform GNU Makefile (macOS, Linux, Windows 10)
 ├── README.md                      # This specification document
-├── dub.json / dub.sdl             # DUB package definition
 ├── scripts/
+│   ├── build_shaders.sh           # Recompiles SPIR-V and MSL shaders
 │   ├── build_third_party.sh       # Platform build script for C dependencies (POSIX)
-│   └── build_third_party.bat      # Platform build script for C dependencies (Windows)
+│   ├── build_third_party.bat      # Platform build script for C dependencies (Windows)
+│   ├── build_viewer.sh            # Build script for map viewer (POSIX)
+│   └── build_viewer.bat           # Build script for map viewer (Windows)
 ├── src/
 │   ├── app.d                      # Entry point & engine loop
 │   ├── bindings/                  # D-to-C bindings (extern(C) / ImportC headers)
@@ -122,10 +125,30 @@ Design the D implementation around these components:
 
 A pseudo-3D viewer for the generated maps. Its side panel sets the layout (rectangle or island), size, grid radius, seed and decoration parameters.
 
+### Building with Make (macOS, Linux, Windows 10)
+
 ```bash
-brew install cmake                 # or: sudo apt install cmake
-scripts/build_third_party.sh       # builds third-party/SDL3 into build/third-party/install
-scripts/build_viewer.sh            # builds bin/shiro_viewer (--debug, --asan)
+# Prerequisites: cmake, ldc2, and a C compiler (clang/gcc/cc/msvc)
+make                 # builds SDL3 (if needed) and standalone bin/shiro_viewer (STATIC=1 default)
+make dist            # packages standalone release tarball/zip in dist/
+make test            # runs unit and integration test suite
+make bench           # runs microbenchmarks
+make help            # lists all targets and build options
+```
+
+#### Build & Distribution Options
+- `STATIC=1` (default): Statically links SDL3 into a standalone single-file binary with zero external dynamic library dependencies (permitted by SDL3's zlib and druntime's Boost licenses).
+- `STATIC=0`: Dynamically links SDL3, automatically placing the shared library alongside the executable in `bin/` with RPATH (`$ORIGIN` on Linux, `@executable_path` on macOS) for portable folder distribution.
+- `TARGET_CPU=silvermont` (default on x86_64 Linux/Windows): Tunes instructions for Intel Braswell (Airmont) and newer CPUs (enabling hardware `POPCNT`, `SSE4.2`, and `SSSE3` while strictly avoiding `AVX` to run safely on low-spec/Atom hardware).
+- `BUILD=release` (default) or `BUILD=debug` / `DEBUG=1`.
+
+Alternatively, platform-specific scripts are available:
+- **macOS / Linux**: `scripts/build_third_party.sh && scripts/build_viewer.sh [--static]`
+- **Windows 10**: `scripts\build_third_party.bat && scripts\build_viewer.bat [--static]`
+
+### Running the Viewer
+
+```bash
 bin/shiro_viewer --layout island --radius 8 --rings 2 --seed 7
 bin/shiro_viewer --cells 20000 --aspect 16:9 --radius 6
 bin/shiro_viewer --cols 120 --rows 60 --screenshot map.bmp   # render one frame and exit
@@ -160,4 +183,4 @@ Game keys:
 - `Del` sells for 70%; `T` cycles targeting (first / strongest / closest).
 - `P` pauses; `,` / `.` change speed (1-3x); `B` lets the scripted bot play.
 
-`bin/shiro_viewer --bot --ticks 6000 --screenshot td.bmp` renders a bot game partway through. The rules live in `src/td/` (headless and deterministic). `tests/run_tests.sh` plays whole bot games, and `benchmarks/bench_td_tick.d` times the tick. The POSIX scripts are the only build path for now; a Windows `.bat` hasn't been written yet.
+`bin/shiro_viewer --bot --ticks 6000 --screenshot td.bmp` renders a bot game partway through. The rules live in `src/td/` (headless and deterministic). `make test` or `tests/run_tests.sh` plays whole bot games, and `make bench-td-tick` or `benchmarks/bench_td_tick.d` times the tick. The project can be built via `make` on macOS, Linux, and Windows 10, or using the platform scripts in `scripts/`.

@@ -13,5 +13,5 @@ for a in "$@"; do
 done
 # The bare -i skips druntime's `core` package, which our src/core modules share a name with.
 ldc2 -i=wfc -i=td -i=tests -i=viewer -i=gfx -i=core.bitset -i=core.noise -i=core.random -i=core.result -I. -Isrc \
-    -defaultlib=druntime-ldc -fno-exceptions -g -unittest $san tests/test_runner.d -of="$out"
+    -defaultlib=druntime-ldc -fno-exceptions -g -unittest $san -od="$(dirname "$out")" tests/test_runner.d -of="$out"
 "$out" $args

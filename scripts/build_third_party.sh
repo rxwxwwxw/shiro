@@ -26,13 +26,13 @@ build_lib() {
     name=$1
     shift
     cmake -S "third-party/$name" -B "build/third-party/$name" -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_PREFIX_PATH="$prefix" "$@"
+        -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INSTALL_LIBDIR=lib "$@"
     cmake --build "build/third-party/$name" --config Release --parallel "$jobs"
     cmake --install "build/third-party/$name" --config Release
 }
 
 if [ $force -eq 1 ] || ! ls "$prefix"/lib/libSDL3.* >/dev/null 2>&1; then
-    build_lib SDL3 -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF \
+    build_lib SDL3 -DSDL_SHARED=ON -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF \
         -DSDL_EXAMPLES=OFF
 else
     echo "SDL3 already built (pass --force to rebuild)"
