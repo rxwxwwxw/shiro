@@ -20,6 +20,7 @@ struct Bot {
     private int numSpots;
     private int[numTowerKinds] built;
     private int decisions;
+    private int rankedStage;
     /// Ticks between decisions.
     int every = 20;
 
@@ -31,14 +32,21 @@ struct Bot {
 
     enum int maxSpots = 512;
 
-    /// Ranks the board's buildable cells by how much road lies within a typical tower range.
+    /// Starts on `g`'s board.
     void setup(ref const Game g) @nogc nothrow @trusted {
         free(spots);
         spots = cast(Spot*)malloc(maxSpots * Spot.sizeof);
         assert(spots !is null);
-        numSpots = 0;
         built[] = 0;
         decisions = 0;
+        rank(g);
+    }
+
+    /// Ranks the board's buildable cells by how much road lies within a typical tower range (again
+    /// whenever a reveal changes the board).
+    private void rank(ref const Game g) @nogc nothrow @trusted {
+        numSpots = 0;
+        rankedStage = g.board.stage;
         const b = &g.board();
         // Traffic: how many sources' walks to a sink pass each cell (steepest descent, first
         // candidate), so towers go where every creep passes, not on a branch one source uses.
@@ -105,6 +113,8 @@ struct Bot {
             return;
         if (g.status != GameStatus.waiting && g.status != GameStatus.wave)
             return;
+        if (g.board.stage != rankedStage)
+            rank(g);
         decisions++;
         // Mines on free veins pay for themselves within a few waves.
         foreach (k; 0 .. numSpots) {

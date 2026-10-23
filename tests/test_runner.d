@@ -25,7 +25,7 @@ import core.bitset, core.noise, core.random, core.result;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
     viewer.commands, gfx.iso, gfx.camera, gfx.pick, gfx.hex_mesh, wfc.solver, wfc.tile_data,
-    wfc.tile_map, td.defs, td.spatial, td.waves, td.board, td.game, td.bot;
+    wfc.tile_map, td.defs, td.spatial, td.waves, td.board, td.game, td.bot, wfc.reveal;
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];
@@ -57,6 +57,7 @@ int main(string[] args) {
 
     printf("tower defense (%s)\n", full ? "full".ptr : "quick".ptr);
     tests.test_td_sim.run(rep, full ? 20 : 3);
+    tests.test_td_sim.runReveal(rep, full ? 20 : 6);
 
     rep.check(withinMemory(memoryCeilingMiB, "integration"), "peak memory under ceiling");
     printf("integration: %d passed, %d failed, peak RSS %d MiB (ceiling %d MiB, timeout %d s)\n",

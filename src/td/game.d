@@ -123,7 +123,9 @@ enum EventKind : ubyte {
     /// New burning patch; value = radius.
     napalm,
     gameOver,
-    victory
+    victory,
+    /// More of the map was uncovered; value = the new stage.
+    reveal
 }
 
 struct SimEvent {
@@ -169,7 +171,9 @@ enum CommandError : ubyte {
     noTower,
     maxed,
     wrongPhase,
-    full
+    full,
+    /// The cell is still in the fog.
+    hidden
 }
 
 struct Game {
@@ -190,6 +194,10 @@ struct Game {
     int gold, lives;
     /// Waves started so far.
     int waveNo;
+    /// Waves to clear for a win: totalWaves, or every stage's waves on a reveal map.
+    int waveLimit = totalWaves;
+    /// Reveal maps: waves per stage (0 = the whole map from the start).
+    int wavesPerStage;
     GameStatus status;
     /// Ticks until the next wave starts by itself (while waiting).
     int countdown;
@@ -231,6 +239,10 @@ struct Game {
     void start(ref const MapSession s, uint seed) @nogc nothrow @trusted {
         board_.load(s, seed);
         begin(seed);
+        if (board_.plan.enabled) {
+            wavesPerStage = s.params.reveal.wavesPerStage > 0 ? s.params.reveal.wavesPerStage : 1;
+            waveLimit = board_.numStages * wavesPerStage;
+        }
     }
 
     /// New game on the current board (tests fill it by hand, then call this).
@@ -258,6 +270,8 @@ struct Game {
         gold = startGold;
         lives = startLives;
         waveNo = 0;
+        waveLimit = totalWaves;
+        wavesPerStage = 0;
         status = GameStatus.waiting;
         countdown = firstWaveDelay;
         creepsAlive = killed = leaked = 0;
@@ -333,6 +347,8 @@ struct Game {
         if (!board_.inside(col, row))
             return CommandError.outside;
         immutable i = cast(size_t)row * board_.rect.cols + col;
+        if (!board_.visible(i))
+            return CommandError.hidden;
         if (!(board_.flagsAt(i) & CellFlag.buildable))
             return CommandError.notBuildable;
         if (towerAt_[i] != 0)
@@ -358,6 +374,7 @@ struct Game {
         put(gold);
         put(lives);
         put(waveNo);
+        put(board_.stage);
         put(status);
         put(countdown);
         foreach (i; 0 .. maxCreeps) {
@@ -533,7 +550,10 @@ struct Game {
             }
         gold += pay;
         emit(SimEvent(EventKind.waveClear, 0, 0, 0, 0, 0, 0, pay));
-        if (waveNo >= totalWaves) {
+        // A stage's last wave uncovers the next stage (no creeps are left on the board).
+        if (wavesPerStage > 0 && waveNo % wavesPerStage == 0 && waveNo < waveLimit && board_.advanceStage())
+            emit(SimEvent(EventKind.reveal, 0, 0, 0, 0, 0, 0, board_.stage));
+        if (waveNo >= waveLimit) {
             status = GameStatus.won;
             emit(SimEvent(EventKind.victory));
         } else {
@@ -1376,4 +1396,52 @@ version (unittest) {
                 g.apply(GameCommand(CommandType.startWave));
     }
     assert(diverged);
+}
+
+@nogc nothrow unittest {
+    import wfc.reveal : Side, Window;
+
+    // Reveal chapters: the road from a source at col 18 enters a window of cols 0 .. 9; creeps walk
+    // in from col 9 and never outside the window, fog cells refuse towers, and clearing the
+    // stage's wave uncovers the rest, keeping the towers.
+    Game g;
+    auto b = &g.boardForSetup();
+    b.allocate(MapRect(20, 7));
+    foreach (row; 0 .. 7)
+        foreach (col; 0 .. 20)
+            b.setCell(col, row, row == 3 && col >= 1 && col <= 18
+                    ? cast(ubyte)(CellFlag.walk | CellFlag.road | (col == 18 ? CellFlag.source
+                        : 0) | (col == 1 ? CellFlag.sink : 0)) : CellFlag.buildable);
+    foreach (col; 1 .. 19)
+        b.setExits(col, 3, cast(ubyte)((col > 1 ? 1 << HexDir.W : 0) | (col < 18 ? 1 << HexDir.E : 0)));
+    b.plan.world = b.rect;
+    b.plan.numStages = 2;
+    b.plan.entrySide = Side.east;
+    b.plan.windows[0] = Window(0, 0, 10, 7);
+    b.plan.windows[1] = Window.of(b.rect);
+    b.applyWindow(b.plan.window(0));
+    g.begin(1);
+    g.wavesPerStage = 1;
+    g.waveLimit = 2;
+    assert(g.apply(placeCmd(TowerKind.arrow, 14, 2)) == CommandError.hidden);
+    assert(g.apply(placeCmd(TowerKind.arrow, 5, 2)) == CommandError.none);
+    assert(g.apply(GameCommand(CommandType.startWave)) == CommandError.none);
+    bool revealed = false, outside = false;
+    foreach (t; 0 .. 20_000) {
+        g.advance();
+        foreach (ref c; g.creeps)
+            if (c.alive && !g.board.visible(c.cell))
+                outside = true;
+        foreach (ref e; g.events)
+            if (e.kind == EventKind.reveal) {
+                assert(e.value == 1);
+                revealed = true;
+            }
+        if (g.status != GameStatus.wave)
+            break;
+    }
+    assert(!outside && revealed && g.status == GameStatus.waiting && g.board.stage == 1);
+    assert(g.towerAt(5, 2) !is null);
+    assert(g.board.numSources == 1 && g.board.sources[0] == offsetToCube(18, 3));
+    assert(g.apply(placeCmd(TowerKind.arrow, 14, 2)) == CommandError.none);
 }

@@ -17,6 +17,7 @@ import wfc.passability : NavFlag;
 import wfc.tile_data : tileList;
 import wfc.map_session;
 import wfc.placement : maxSinks, maxSources;
+import wfc.reveal : maxStages;
 
 enum float panelWidth = 280;
 
@@ -73,9 +74,10 @@ private bool section(nk_context* ctx, const(char)* title, int id, bool open) @no
             ? nk_collapse_states.NK_MAXIMIZED : nk_collapse_states.NK_MINIMIZED, title, 0, id);
 }
 
-private immutable char*[10] errorText = [
+private immutable char*[11] errorText = [
     "", "Outside the map", "Can't build there", "Already a tower there", "Mines go on gold veins only",
-    "Not enough gold", "No tower there", "Fully upgraded", "Not now", "Too many towers"
+    "Not enough gold", "No tower there", "Fully upgraded", "Not now", "Too many towers",
+    "Still in the fog"
 ];
 
 private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
@@ -105,13 +107,16 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref GameQueue gq, re
     labelf(ctx, "Gold %d", g.gold);
     labelf(ctx, "Lives %d", g.lives);
     nk_layout_row_dynamic(ctx, 18, 1);
+    if (g.board.plan.enabled)
+        labelf(ctx, "Stage %d/%d: next reveal after wave %d", g.board.stage + 1, g.board.numStages,
+                (g.board.stage + 1) * g.wavesPerStage);
     final switch (g.status) {
     case GameStatus.waiting:
-        labelf(ctx, "Wave %d/%d next in %d s", g.waveNo + 1, totalWaves,
+        labelf(ctx, "Wave %d/%d next in %d s", g.waveNo + 1, g.waveLimit,
                 (g.countdown + ticksPerSecond - 1) / ticksPerSecond);
         break;
     case GameStatus.wave:
-        labelf(ctx, "Wave %d/%d: %d creeps left", g.waveNo, totalWaves,
+        labelf(ctx, "Wave %d/%d: %d creeps left", g.waveNo, g.waveLimit,
                 g.creepsAlive + g.pendingSpawns);
         break;
     case GameStatus.lost:
@@ -414,6 +419,15 @@ private void generationPanel(nk_context* ctx, ref ViewerState st, ref CommandQue
         nk_property_int(ctx, "Edge margin:", 1, &p.routes.place.edgeMargin, 20, 1, 0.1f);
         nk_layout_row_dynamic(ctx, 22, 1);
         checkbox(ctx, "Terrain walls (cliff, river, coast)", p.routes.flankTerrain);
+        checkbox(ctx, "Reveal the map in stages (rect)", p.reveal.enabled);
+        if (p.reveal.enabled) {
+            nk_layout_row_dynamic(ctx, 24, 2);
+            nk_property_int(ctx, "Stages:", 2, &p.reveal.stages, maxStages, 1, 0.1f);
+            nk_property_int(ctx, "Waves/stage:", 1, &p.reveal.wavesPerStage, 30, 1, 0.1f);
+            nk_property_int(ctx, "Start cols:", 0, &p.reveal.startCols, 400, 1, 0.5f);
+            nk_property_int(ctx, "Start rows:", 0, &p.reveal.startRows, 400, 1, 0.5f);
+            nk_property_int(ctx, "Defense path:", 4, &p.reveal.minDefensePath, 80, 1, 0.2f);
+        }
     }
 
 }

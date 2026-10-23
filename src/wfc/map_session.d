@@ -17,6 +17,7 @@ import wfc.hex;
 import wfc.map_generator;
 import wfc.passability;
 import wfc.placement;
+import wfc.reveal;
 import wfc.road_rules;
 import wfc.routes;
 import wfc.rules;
@@ -38,6 +39,8 @@ enum int maxGridRadius = 16;
 enum int maxIslandRings = 4;
 /// Whole-map retries (with derived seeds) when a generated map fails route validation.
 enum int maxRouteAttempts = 4;
+/// Reveal maps: endpoint + road plans tried per attempt before one passes the stage checks.
+enum int maxRevealPlans = 24;
 
 struct GenParams {
     Layout layout = Layout.rect;
@@ -52,6 +55,8 @@ struct GenParams {
     DecorationParams deco;
     /// Sources, sinks and walled roads for tower defense play.
     RouteParams routes;
+    /// Start on a small window of the map and uncover the rest in stages (rect layout only).
+    RevealParams reveal;
 }
 
 struct MapSession {
@@ -65,6 +70,7 @@ struct MapSession {
     private StateSet flankStates;
     private RoadNetwork network_;
     private NavMap navMap;
+    private RevealPlan revealPlan;
     GenStats stats;
     /// Route validation of the last map (all zero when routes are disabled).
     RouteReport routeReport;
@@ -140,6 +146,30 @@ struct MapSession {
         return roadMasks;
     }
 
+    /// Reveal stages of the last map (`enabled` false when the whole map is played at once).
+    ref const(RevealPlan) reveal() const return @nogc nothrow pure @safe {
+        return revealPlan;
+    }
+
+    /// True if every reveal stage of the last map is playable on the solved terrain.
+    bool revealPlayable() const @nogc nothrow @trusted {
+        if (!revealPlan.enabled)
+            return true;
+        immutable n = navMap.rect.cellCount;
+        auto flags = cast(ubyte*)malloc(n), exits = cast(ubyte*)malloc(n);
+        assert(flags && exits, "reveal check allocation failed");
+        scope (exit) {
+            free(flags);
+            free(exits);
+        }
+        foreach (i; 0 .. n) {
+            immutable c = navMap.rect.cellAt(i);
+            flags[i] = navMap.get(c);
+            exits[i] = network_.roadDirs(c);
+        }
+        return stagesPlayable(revealPlan, flags[0 .. n], exits[0 .. n], navBits, lastParams.reveal.minDefensePath);
+    }
+
     // WFC constraints from the planned network (member delegates: no closure allocation).
     private const(StateSet)* maskFor(const CubeCoord c) @nogc nothrow @trusted {
         if (!network_.rect.contains(c))
@@ -199,6 +229,9 @@ struct MapSession {
 
         immutable t0 = MonoTime.currTime;
         immutable routed = p.routes.enabled;
+        immutable staged = routed && p.reveal.enabled && p.layout == Layout.rect;
+        if (!staged)
+            revealPlan = RevealPlan.init;
         EngineError planError = EngineError.None;
         bool generated = false;
         foreach (attempt; 0 .. routed ? maxRouteAttempts : 1) {
@@ -211,22 +244,45 @@ struct MapSession {
                 scope InMapLookup inMap = (const CubeCoord c) @nogc nothrow => p.layout == Layout.rect
                     || inIsland(c, p, center);
                 auto field = BoundaryField(rect, inMap);
-                auto ep = placeEndpoints(field, p.routes.place, rng);
-                if (!ep.isOk) {
-                    planError = ep.error;
-                    continue;
+                RevealPlan plan;
+                if (staged) {
+                    auto pr = planReveal(rect, p.reveal, rng);
+                    if (!pr.isOk)
+                        return Result!GenStats.err(pr.error);
+                    plan = pr.value;
                 }
-                auto net = RoadNetwork(rect);
-                auto planned = planNetwork(net, field, ep.value, p.routes, rng);
-                if (!planned.isOk) {
-                    planError = planned.error;
-                    continue;
+                auto net = RoadNetwork.init;
+                bool planned = false;
+                foreach (_; 0 .. staged ? maxRevealPlans : 1) {
+                    auto ep = staged ? placeStagedEndpoints(field, plan, p.routes.place, p.reveal.minDefensePath, rng)
+                        : placeEndpoints(field, p.routes.place, rng);
+                    if (!ep.isOk) {
+                        planError = ep.error;
+                        continue;
+                    }
+                    net = RoadNetwork(rect);
+                    auto pn = planNetwork(net, field, ep.value, p.routes, rng);
+                    if (!pn.isOk) {
+                        planError = pn.error;
+                        continue;
+                    }
+                    // Cheap check on the planned roads alone before paying for WFC.
+                    if (staged && !planPlayable(net, plan, p.reveal.minDefensePath)) {
+                        planError = EngineError.RoutingFailed;
+                        continue;
+                    }
+                    planned = true;
+                    break;
                 }
+                if (!planned)
+                    continue;
                 network_ = move(net);
+                revealPlan = plan;
                 cons.mask = &maskFor;
                 cons.protect = &protectFor;
             } else {
                 network_ = RoadNetwork.init;
+                revealPlan = RevealPlan.init;
             }
             lastParams = p;
             generated = true;
@@ -248,7 +304,7 @@ struct MapSession {
             if (!routed)
                 break;
             routeReport = validateRoutes(navMap, tileMap, network_, roadMasks);
-            if (routeReport.ok)
+            if (routeReport.ok && revealPlayable())
                 break;
         }
         if (!generated)
@@ -256,6 +312,30 @@ struct MapSession {
         genMillis = (MonoTime.currTime - t0).total!"usecs" / 1000.0;
         return Result!GenStats.ok(stats);
     }
+}
+
+private enum FlagBits navBits = FlagBits(NavFlag.ground, NavFlag.source, NavFlag.sink);
+
+/// Stage checks on a planned network, before any terrain exists: road cells walk.
+private bool planPlayable(ref const RoadNetwork net, ref const RevealPlan plan, int minDefensePath) @nogc nothrow @trusted {
+    immutable n = net.rect.cellCount;
+    auto flags = cast(ubyte*)malloc(n), exits = cast(ubyte*)malloc(n);
+    assert(flags && exits, "reveal check allocation failed");
+    scope (exit) {
+        free(flags);
+        free(exits);
+    }
+    foreach (i; 0 .. n) {
+        immutable c = net.rect.cellAt(i);
+        exits[i] = net.roadDirs(c);
+        ubyte f = net.onNetwork(c) ? NavFlag.ground : 0;
+        if (net.isSource(c))
+            f |= NavFlag.source;
+        if (net.isSink(c))
+            f |= NavFlag.sink;
+        flags[i] = f;
+    }
+    return stagesPlayable(plan, flags[0 .. n], exits[0 .. n], navBits, minDefensePath);
 }
 
 version (unittest) {
@@ -419,4 +499,38 @@ version (unittest) {
     p.routes.enabled = false;
     assert(s.regenerate(p).isOk);
     assert(!s.network.allocated && s.decorations.count(DecoKind.source) == 0);
+}
+
+@nogc nothrow unittest {
+    // Reveal maps: every stage is playable on the solved terrain, window 0 holds one sink, the
+    // plan is deterministic, and island layouts ignore the reveal.
+    auto s = MapSession.create().value;
+    scope (exit)
+        MapSession.release(s);
+    GenParams p;
+    p.cols = 96;
+    p.rows = 54;
+    p.radius = 6;
+    p.reveal.enabled = true;
+    int playable = 0;
+    foreach (seed; 1 .. 5) {
+        p.seed = seed;
+        assert(s.regenerate(p).isOk);
+        assert(s.reveal.enabled && s.reveal.numStages == p.reveal.stages);
+        if (!s.routeReport.ok || !s.revealPlayable)
+            continue;
+        playable++;
+        int sinks0 = 0;
+        foreach (i; 0 .. s.network.endpoints.numSinks)
+            sinks0 += s.reveal.window(0).contains(s.network.endpoints.sinks[i]);
+        assert(sinks0 == 1);
+        foreach (i; 0 .. s.network.endpoints.numSources)
+            assert(!s.reveal.window(0).contains(s.network.endpoints.sources[i]));
+        const w = s.reveal.windows;
+        assert(s.regenerate(p).isOk && s.reveal.windows == w);
+    }
+    assert(playable >= 3);
+    p.layout = Layout.island;
+    p.rings = 1;
+    assert(s.regenerate(p).isOk && !s.reveal.enabled);
 }

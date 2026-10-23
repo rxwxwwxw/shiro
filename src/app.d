@@ -166,6 +166,11 @@ private struct Viewer {
     void onSimEvents() @nogc nothrow @trusted {
         fx.onEvents(game.events);
         foreach (ref e; game.events) {
+            if (e.kind == EventKind.reveal) {
+                mesh.fogChanged();
+                fitView();
+                continue;
+            }
             if (e.kind != EventKind.built && e.kind != EventKind.upgraded && e.kind != EventKind.sold)
                 continue;
             immutable row = e.y / rowUnits;
@@ -242,6 +247,12 @@ private struct Viewer {
     }
 
     void fitView() @nogc nothrow @safe {
+        if (game.active && game.board.plan.enabled) {
+            float x0, y0, x1, y1;
+            mesh.windowBounds(game.board.window, x0, y0, x1, y1);
+            camera.fit(x0, y0, x1, y1);
+            return;
+        }
         camera.fit(mesh.minX, mesh.minY, mesh.maxX, mesh.maxY);
     }
 

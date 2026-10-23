@@ -24,6 +24,7 @@ import td.game : Game, Tower;
 import wfc.decorations : bridgeNames, buildingDefs, Decoration, DecoKind, mountainNames, towerVariant;
 import wfc.hex;
 import wfc.map_session : MapSession;
+import wfc.reveal : Window;
 import wfc.rules : EdgeInfo, TileState;
 import wfc.tile_data;
 
@@ -393,6 +394,32 @@ struct MapMesh {
         clearCache();
     }
 
+    /// True for cells still in the fog of a reveal game.
+    bool fogged(int col, int row) const @nogc nothrow @trusted {
+        return game_ !is null && game_.active && game_.board.plan.enabled
+            && !game_.board.window.containsOffset(col, row);
+    }
+
+    private static uint fog(uint rgba) @nogc nothrow pure @safe {
+        enum uint keep = 90; // of 256
+        immutable r = (rgba & 0xFF) * keep >> 8, g = (rgba >> 8 & 0xFF) * keep >> 8;
+        immutable b = (rgba >> 16 & 0xFF) * keep >> 8;
+        return (rgba & 0xFF000000) | r | g << 8 | b << 16;
+    }
+
+    /// The visible window changed: every chunk is rebuilt with the new fog.
+    void fogChanged() @nogc nothrow @trusted {
+        clearCache();
+    }
+
+    /// Screen-space bounds of the cells of a window (as `minX` .. `maxY` are for the whole map).
+    void windowBounds(const Window w, out float x0, out float y0, out float x1, out float y1) const @nogc nothrow @safe {
+        x0 = w.col0 * 2 - 1;
+        x1 = (w.col0 + w.cols) * 2 + 1;
+        y0 = rowY(w.row0) - (levelsCount * levelStep + 1.0f);
+        y1 = rowY(w.row0 + w.rows - 1) + hexRadius * squash + 1.0f;
+    }
+
     /// Drops the cached chunk holding a cell so it is rebuilt (a tower was built, upgraded or sold).
     void invalidateCell(int col, int row) @nogc nothrow @trusted {
         if (chunks is null || col < 0 || row < 0 || col >= colCount || row >= rowCount)
@@ -421,11 +448,19 @@ struct MapMesh {
         MeshOptions o = opts;
         o.decorations = opts.decorations && lod_ != Lod.plain;
         immutable col1 = (block + 1) * blockCols < colCount ? (block + 1) * blockCols : colCount;
-        foreach (col; block * blockCols .. col1)
+        foreach (col; block * blockCols .. col1) {
+            immutable v0 = nVerts, ov0 = nOv;
             if (lod_ == Lod.model)
                 addCellTextured(*sess, offsetToCube(col, row), col, row, o, ts);
             else
                 addCell(*sess, offsetToCube(col, row), col, row, o, cliff);
+            if (!oom && fogged(col, row)) {
+                foreach (ref mv; verts[v0 .. nVerts])
+                    mv.rgba = fog(mv.rgba);
+                foreach (ref mv; oVerts[ov0 .. nOv])
+                    mv.rgba = fog(mv.rgba);
+            }
+        }
         if (oom)
             return false;
         c.nv = cast(uint)nVerts;

@@ -311,6 +311,7 @@ struct Particles {
         case EventKind.waveStart:
         case EventKind.gameOver:
         case EventKind.victory:
+        case EventKind.reveal:
             break;
         }
     }

@@ -5,6 +5,7 @@ import core.result;
 import wfc.grid_connector : MapRect;
 import wfc.map_session : GenParams, Layout;
 import wfc.placement : maxSinks, maxSources;
+import wfc.reveal : maxStages;
 
 enum CliError : int {
     none,
@@ -54,6 +55,8 @@ immutable string usage = "usage: shiro_viewer [options]
   --seed N               random seed (default 1)
   --sources N --sinks N  creep sources and sinks, 1..16 each (default 2 and 1)
   --no-roads             plain terrain without sources, sinks and roads
+  --stages N             uncover the map in N stages, 2..8 (default 4; rect layout)
+  --no-reveal            play the whole map from the first wave
   --width N --height N   window size (default 1440 x 900)
   --screenshot PATH      render one frame to a BMP and exit
   --assets DIR           Hex-Map-WFC assets directory (default third-party/Hex-Map-WFC/public/assets)
@@ -93,11 +96,16 @@ unittest {
 Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @trusted {
     alias R = Result!(ViewerConfig, CliError);
     ViewerConfig cfg;
+    cfg.params.reveal.enabled = true;
     int cells = 0, aw = 16, ah = 9;
     for (size_t i = 0; i < args.length; i++) {
         immutable a = args[i];
         if (a == "--help" || a == "-h")
             return R.err(CliError.help);
+        if (a == "--no-reveal") {
+            cfg.params.reveal.enabled = false;
+            continue;
+        }
         if (a == "--flat") {
             cfg.flat = true;
             continue;
@@ -200,6 +208,11 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
             if (!num() || n < 1 || n > maxSinks)
                 return R.err(CliError.badNumber);
             cfg.params.routes.place.sinks = n;
+            break;
+        case "--stages":
+            if (!num() || n < 2 || n > maxStages)
+                return R.err(CliError.badNumber);
+            cfg.params.reveal.stages = n;
             break;
         case "--zoom":
             if (!num() || n < 1)
@@ -309,4 +322,15 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     assert(parseArgs(lay[]).error == CliError.badLayout);
     immutable string[2] asp = ["--aspect", "169"];
     assert(parseArgs(asp[]).error == CliError.badNumber);
+}
+
+@nogc nothrow @safe unittest {
+    // The viewer reveals the map in stages unless told not to.
+    immutable string[2] a = ["--stages", "3"];
+    auto r = parseArgs(a[]);
+    assert(r.isOk && r.value.params.reveal.enabled && r.value.params.reveal.stages == 3);
+    immutable string[1] off = ["--no-reveal"];
+    assert(!parseArgs(off[]).value.params.reveal.enabled);
+    immutable string[2] bad = ["--stages", "9"];
+    assert(parseArgs(bad[]).error == CliError.badNumber);
 }
