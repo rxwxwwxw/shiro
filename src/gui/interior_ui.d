@@ -10,7 +10,8 @@ import bindings.sdl3.sdl;
 import core.stdc.stdio : snprintf;
 import gui.dialogue_ui : ArtCache;
 import gui.nuklear_ui : NuklearContext;
-import story.dialogue;
+import story.program;
+import story.vm;
 import village.interior;
 import village.world;
 
@@ -94,7 +95,7 @@ struct InteriorUi {
     }
 
     /// Backdrop, the host figure and the menu panel (SDL, under the Nuklear text).
-    void drawScene(SDL_Renderer* r, ref const VillageWorld w, ref const DialogueDb db, float viewW, float viewH) @nogc nothrow @trusted {
+    void drawScene(SDL_Renderer* r, ref const VillageWorld w, ref const StoryProgram db, float viewW, float viewH) @nogc nothrow @trusted {
         const it = w.interior;
         if (it is null)
             return;
@@ -145,8 +146,8 @@ struct InteriorUi {
     }
 
     /// Title, section tabs and the section's contents (Nuklear); clicks queue village commands.
-    void drawUi(ref NuklearContext ui, ref const VillageWorld w, ref const DialogueDb db, ref VillageQueue q,
-            float viewW, float viewH) @nogc nothrow @trusted {
+    void drawUi(ref NuklearContext ui, ref const VillageWorld w, ref const StoryProgram db,
+            ref VillageQueue q, float viewW, float viewH) @nogc nothrow @trusted {
         sync(w);
         const it = w.interior;
         if (it is null)

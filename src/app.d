@@ -26,7 +26,9 @@ import gui.interior_ui;
 import gui.menus : drawMenus;
 import village.interior : Interiors;
 import gui.nuklear_ui;
-import story.dialogue;
+import story.program;
+import story.vm;
+import story.compile;
 import story.state;
 import story.td_link;
 import td.bot;
@@ -47,7 +49,7 @@ private enum float paletteSaturation = 1.0f, paletteExposure = 0.9f;
 /// Pixels a press may travel and still count as a click; tallest cell top in levels, for picking.
 private enum float clickSlop = 4, maxCellHeight = 8;
 private enum string defaultAssets = "third-party/Hex-Map-WFC/public/assets";
-private enum string defaultStory = "assets/story/village.json";
+private enum string defaultStory = "assets/story/main.story";
 private enum string dialogueFont = "assets/fonts/Roboto-Regular.ttf";
 /// Screen units per iso unit while walking around the village.
 private enum float villageZoom = 56;
@@ -87,7 +89,7 @@ private struct Viewer {
     Scene scene = Scene.td;
     /// The village story: file, compiled dialogue, flags, and the hub's map and simulation.
     FileBytes storyFile;
-    DialogueDb dialogueDb;
+    StoryProgram dialogueDb;
     StoryState storyState;
     VillagePlan plan;
     WalkGrid walk;
@@ -420,37 +422,48 @@ private struct Viewer {
 
     // ---- the village -------------------------------------------------------------------------
 
-    /// Reads and compiles the story (the --story file, else assets/story/village.json next to the
-    /// working directory or the executable); false (with a message) when it cannot.
+    /// Reads and compiles the story (the --story file, else assets/story/main.story next to the
+    /// working directory or the executable) with its imports; false (with messages) when it cannot.
     bool loadStory(ref const ViewerConfig cfg) @nogc nothrow @trusted {
         char[2048] path = void;
         const(char)* base = SDL_GetBasePath();
-        bool read;
+        int len = -1;
         foreach (attempt; 0 .. 2) {
+            int n;
             if (attempt == 0)
-                snprintf(path.ptr, path.length, "%s", cfg.hasStory ? cfg.story.ptr : defaultStory.ptr);
+                n = snprintf(path.ptr, path.length, "%s", cfg.hasStory ? cfg.story.ptr : defaultStory.ptr);
             else if (!cfg.hasStory && base !is null)
-                snprintf(path.ptr, path.length, "%s../%s", base, defaultStory.ptr);
+                n = snprintf(path.ptr, path.length, "%s../%s", base, defaultStory.ptr);
             else
                 break;
-            if (storyFile.load(path.ptr) == EngineError.None) {
-                read = true;
+            if (n > 0 && n < path.length && storyFile.load(path.ptr) == EngineError.None) {
+                len = n;
                 break;
             }
         }
-        if (!read) {
+        if (len < 0) {
             fprintf(stderr, "story file not found (try --story PATH); starting in tower defense\n");
             return false;
         }
+        const(char)[] loader(const(char)[] file, ref FileBytes scratch) @nogc nothrow {
+            // Paths arrive NUL-terminated just past their length.
+            return scratch.load(file.ptr) == EngineError.None ? scratch.text : null;
+        }
+
         internLinkVars(storyState);
-        immutable err = dialogueDb.load(storyFile.text, storyState);
+        immutable err = compileStory(dialogueDb, storyState, path[0 .. len], &loader);
+        foreach (ref d; dialogueDb.diagnostics)
+            fprintf(stderr, "%.*s:%u:%u: %s: %.*s\n", cast(int)d.file.length, d.file.ptr, d.line,
+                    d.col, d.severity == Severity.error ? "error".ptr : "warning".ptr,
+                    cast(int)d.message.length, d.message.ptr);
         if (err != StoryError.none) {
-            fprintf(stderr, "story error %d at %.*s; starting in tower defense\n", err,
-                    cast(int)dialogueDb.errorContext.length, dialogueDb.errorContext.ptr);
+            fprintf(stderr, "story failed to compile (error %d); starting in tower defense\n", err);
             return false;
         }
-        if (interiors.load(storyFile.text, dialogueDb, storyState) < 0)
-            fprintf(stderr, "story: an interior names an unknown place or host\n");
+        storyState.reset(villageSeed);
+        initialize(dialogueDb, storyState);
+        if (interiors.load(dialogueDb, storyState) < 0)
+            fprintf(stderr, "story: a place is not a village landmark\n");
         return true;
     }
 
@@ -472,7 +485,7 @@ private struct Viewer {
         rebuildMesh(sdl);
         world.setup(&plan, &walk, &dialogueDb, &storyState, villageSeed);
         world.setInteriors(&interiors);
-        if (world.loadNpcs(storyFile.text) < 0)
+        if (world.loadNpcs() < 0)
             fprintf(stderr, "story: an NPC names an unknown speaker or home\n");
         if (returning)
             world.arriveFromTd(won);
@@ -520,8 +533,8 @@ private struct Viewer {
             startBattle(sdl, false);
             return;
         }
-        foreach (id; 0 .. storyState.length)
-            storyState.set(id, 0);
+        storyState.reset(villageSeed);
+        initialize(dialogueDb, storyState);
         state.screen = Screen.none;
         state.debugView = false;
         state.speed = 1;
@@ -604,8 +617,8 @@ private struct Viewer {
         foreach (e; world.events)
             if (e.kind == VillageEventKind.leaveWest)
                 queue.push(CommandKind.regenerate);
-        foreach (i; 0 .. world.storyEvents.length) {
-            const n = dialogueDb.eventNames[world.storyEvents.ids[i]];
+        foreach (ref e; world.storyEvents.items[0 .. world.storyEvents.length]) {
+            const n = e.kind == StoryEventKind.custom ? dialogueDb.eventNames[e.id] : e.a;
             printf("story event: %.*s\n", cast(int)n.length, n.ptr);
         }
         immutable rate = dt * 6 > 1 ? 1.0f : cast(float)(dt * 6);

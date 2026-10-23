@@ -4,11 +4,9 @@
 // a seed plus the ordered command stream always replays the same. Model layer: no SDL.
 module village.world;
 
-import core.json;
 import core.random : Random;
-import story.dialogue;
-import story.events : TriggerKind;
-import story.script : StoryEvents;
+import story.program;
+import story.vm;
 import story.state;
 import story.td_link : varGateOpen;
 import village.interior;
@@ -152,12 +150,12 @@ struct Npc {
 struct VillageWorld {
     private const(VillagePlan)* plan_;
     private const(WalkGrid)* walk_;
-    private const(DialogueDb)* db_;
+    private const(StoryProgram)* db_;
     private StoryState* story_;
     Walker player;
     private Npc[maxNpcs] npcs_;
     private int numNpcs_;
-    private DialogueRunner talk_;
+    private StoryRunner talk_;
     /// NPC in the conversation, or -1.
     private int talkNpc_ = -1;
     private int moveX, moveY;
@@ -178,7 +176,7 @@ struct VillageWorld {
 
     /// Places the player inside the gate and the villagers at home. Every pointer must outlive
     /// the world.
-    void setup(const(VillagePlan)* plan, const(WalkGrid)* walk, const(DialogueDb)* db, StoryState* story, uint seed) @nogc nothrow @trusted {
+    void setup(const(VillagePlan)* plan, const(WalkGrid)* walk, const(StoryProgram)* db, StoryState* story, uint seed) @nogc nothrow @trusted {
         plan_ = plan;
         walk_ = walk;
         db_ = db;
@@ -217,19 +215,13 @@ struct VillageWorld {
         return true;
     }
 
-    /// Reads the "npcs" list of the story file: [{"speaker": "elder", "home": "plaza", "wander": 2}].
-    /// Returns the number added, or -1 on an unknown speaker or landmark.
-    int loadNpcs(const(char)[] storyJson) @nogc nothrow @trusted {
-        Json j;
-        if (!j.parse(storyJson))
-            return -1;
-        immutable list = j.get(0, "npcs");
+    /// Places every character the story gives a home (`home plaza wander 2`). Returns the
+    /// number added, or -1 on an unknown landmark or too many villagers.
+    int loadNpcs() @nogc nothrow @trusted {
         int added = 0;
-        foreach (i; 0 .. j.length(list)) {
-            immutable o = j.at(list, i);
-            immutable sp = db_.findSpeaker(j.str(j.get(o, "speaker")));
-            immutable home = landmarkByName(j.str(j.get(o, "home")));
-            if (sp < 0 || home < 0 || !addNpc(sp, cast(Landmark)home, j.integer(j.get(o, "wander"), 1)))
+        foreach (ref n; db_.npcs) {
+            immutable home = landmarkByName(n.home);
+            if (home < 0 || !addNpc(n.speaker, cast(Landmark)home, n.wander))
                 return -1;
             added++;
         }
@@ -240,7 +232,7 @@ struct VillageWorld {
     void begin() @nogc nothrow @trusted {
         numEvents_ = 0;
         int node;
-        if (db_.trigger(TriggerKind.start, null, *story_, storyEvents, node) >= 0)
+        if ((*db_).trigger(TriggerKind.start, null, *story_, node) >= 0)
             openTalk(node, -1);
         zone_ = zoneAt(worldCell(player.x, player.y));
     }
@@ -255,7 +247,7 @@ struct VillageWorld {
         inside_ = -1;
         placePlayerAtGate();
         int node;
-        if (db_.trigger(TriggerKind.returned, won ? "won" : "lost", *story_, storyEvents, node) >= 0)
+        if ((*db_).trigger(TriggerKind.returned, won ? "won" : "lost", *story_, node) >= 0)
             openTalk(node, -1);
         zone_ = zoneAt(worldCell(player.x, player.y));
     }
@@ -282,7 +274,7 @@ struct VillageWorld {
         return npcs_[0 .. numNpcs_];
     }
 
-    ref const(DialogueRunner) talk() const return @nogc nothrow pure @safe {
+    ref const(StoryRunner) talk() const return @nogc nothrow pure @safe {
         return talk_;
     }
 
@@ -393,8 +385,7 @@ struct VillageWorld {
                 if (n < 0)
                     break;
                 int node;
-                if (db_.trigger(TriggerKind.talk, db_.speakers[npcs_[n].speaker].id, *story_,
-                        storyEvents, node) >= 0 && node >= 0) {
+                if ((*db_).trigger(TriggerKind.talk, db_.speakers[npcs_[n].speaker].id, *story_, node) >= 0 && node >= 0) {
                     openTalk(node, n);
                     // Speakers turn to each other.
                     npcs_[n].body.faceX = player.x - npcs_[n].body.x;
@@ -443,7 +434,7 @@ struct VillageWorld {
                 if (talk_.active || it is null || it.host < 0)
                     break;
                 int node;
-                if (db_.trigger(TriggerKind.talk, db_.speakers[it.host].id, *story_, storyEvents, node) < 0 || node < 0)
+                if ((*db_).trigger(TriggerKind.talk, db_.speakers[it.host].id, *story_, node) < 0 || node < 0)
                     break;
                 int npc = -1;
                 foreach (i, ref n; npcs_[0 .. numNpcs_])
@@ -488,7 +479,7 @@ struct VillageWorld {
             if (z >= 0) {
                 push(VillageEventKind.enterZone, z);
                 int node;
-                if (db_.trigger(TriggerKind.enter, landmarkNames[z], *story_, storyEvents, node) >= 0)
+                if ((*db_).trigger(TriggerKind.enter, landmarkNames[z], *story_, node) >= 0)
                     openTalk(node, -1);
             }
         }
@@ -592,7 +583,7 @@ struct VillageWorld {
         // Step back inside so the guard's words do not repeat every tick.
         tryMove(player, player.x + halfHex, player.y);
         int node;
-        if (db_.trigger(TriggerKind.enter, "gate_locked", *story_, storyEvents, node) >= 0)
+        if ((*db_).trigger(TriggerKind.enter, "gate_locked", *story_, node) >= 0)
             openTalk(node, -1);
     }
 
@@ -629,21 +620,36 @@ struct VillageWorld {
 }
 
 version (unittest) {
-    private immutable testStory = `{
-      "speakers": [{"id": "elder", "name": "Ba Lan"}, {"id": "guard", "name": "Guard"}],
-      "npcs": [{"speaker": "elder", "home": "plaza", "wander": 0}, {"speaker": "guard", "home": "gate", "wander": 0}],
-      "nodes": [
-        {"id": "hello", "speaker": "elder", "text": "Will you go west?",
-         "choices": [{"text": "Yes.", "effects": ["set gate_open"]}, {"text": "No."}]},
-        {"id": "shut", "speaker": "guard", "text": "The gate is shut."},
-        {"id": "back", "speaker": "elder", "text": "Welcome home."}
-      ],
-      "triggers": [
-        {"on": "talk", "target": "elder", "node": "hello"},
-        {"on": "enter", "target": "gate_locked", "node": "shut"},
-        {"on": "return", "target": "won", "node": "back"}
-      ]
-    }`;
+    import story.compile : compileText;
+
+    private immutable testStory = `
+character elder "Ba Lan":
+    home plaza wander 0
+character guard "Guard":
+    home gate wander 0
+
+var coins = 5
+
+place plaza "Square":
+    host elder
+    ware "Tea" 3 -> has_tea: Hot.
+
+on talk elder -> hello
+on enter gate_locked -> shut
+on return won -> back
+
+label hello:
+    elder: Will you go west?
+    * Yes.
+        set gate_open
+    * No.
+
+label shut:
+    guard: The gate is shut.
+
+label back:
+    elder: Welcome home.
+`;
 }
 
 @nogc nothrow unittest {
@@ -658,13 +664,14 @@ version (unittest) {
     WalkGrid walk;
     assert(buildVillage(s, 3, plan, walk).isOk);
     StoryState st;
-    DialogueDb db;
-    assert(db.load(testStory, st) == StoryError.none);
+    StoryProgram db;
     st.intern(varGateOpen);
+    assert(compileText(db, st, testStory) == StoryError.none);
+    initialize(db, st);
 
     ulong runOnce(ref VillageWorld w) @nogc nothrow {
         w.setup(&plan, &walk, &db, &st, 11);
-        assert(w.loadNpcs(testStory) == 2);
+        assert(w.loadNpcs() == 2);
         w.begin();
         assert(!w.talking && worldCell(w.player.x, w.player.y) == offsetToCube(2, plan.gateRow));
 
@@ -717,12 +724,11 @@ version (unittest) {
     // Into the smithy: the smith talks from behind the counter, wares cost coins, and out again.
     {
         Interiors ins;
-        assert(ins.load(`{"coins": 5, "interiors": [{"place": "plaza", "title": "Square", "host": "elder",
-            "wares": [{"name": "Tea", "price": 3, "flag": "has_tea"}]}]}`, db, st) == 1);
+        assert(ins.load(db, st) == 1);
         VillageWorld w;
         w.setup(&plan, &walk, &db, &st, 11);
         w.setInteriors(&ins);
-        assert(w.loadNpcs(testStory) == 2);
+        assert(w.loadNpcs() == 2);
         assert(!w.enterNow("smithy") && w.enterNow("plaza"));
         assert(w.inside == Landmark.plaza && w.interior.title == "Square");
         immutable p0 = w.player;
@@ -741,11 +747,13 @@ version (unittest) {
         w.apply(VillageCommand(VillageCmd.leave));
         assert(w.inside == -1 && w.doorInReach == Landmark.plaza);
         st.reset();
+        initialize(db, st);
     }
 
     VillageWorld a, b;
     immutable ha = runOnce(a);
     st.reset();
+    initialize(db, st);
     immutable hb = runOnce(b);
     assert(ha == hb);
 }

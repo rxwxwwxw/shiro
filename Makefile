@@ -136,6 +136,8 @@ else
     C_OPT_FLAGS := -O2
 endif
 
+# Under ASan the test run caps the free-memory quarantine (default 256 MiB), which otherwise counts
+# toward the integration memory ceiling as the story compiler churns through parse arenas.
 ifeq ($(ASAN),1)
     D_SAN_FLAGS := -fsanitize=address
     C_SAN_FLAGS := -fsanitize=address
@@ -155,13 +157,13 @@ endif
 
 # D Compiler Flags (LDC2)
 D_MODULES := -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app \
-             -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
+             -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
 
 D_TEST_MODULES := -i=wfc -i=td -i=tests -i=viewer -i=gfx \
-                  -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
+                  -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
 
 D_BENCH_MODULES := -i=wfc -i=td -i=village \
-                   -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village
+                   -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
 
 D_COMMON_FLAGS := -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w
 
@@ -256,7 +258,7 @@ endif
 # Primary Targets
 # -----------------------------------------------------------------------------
 
-.PHONY: all viewer test check bench benchmarks third-party third-party-clean \
+.PHONY: all viewer test test-npegged check bench benchmarks third-party third-party-clean \
         clean clean-all distclean vgc check-nophobos fmt fmt-check shaders dist help
 
 all: viewer
@@ -395,13 +397,22 @@ test: check
 
 check: $(TEST_BIN)
 	@echo "==> Running headless test suite [$(BUILD)]..."
-	$(RUN_DIR)$(TEST_BIN) $(if $(filter 1,$(FULL)),--full,)
+	$(if $(filter 1,$(ASAN)),ASAN_OPTIONS=quarantine_size_mb=32$(if $(ASAN_OPTIONS),:$(ASAN_OPTIONS),),) $(RUN_DIR)$(TEST_BIN) $(if $(filter 1,$(FULL)),--full,)
 
 $(TEST_BIN): tests/test_runner.d $(TEST_SRCS) $(D_SRCS) | $(CONFIG_BIN_DIR) $(OBJ_DIR)
 	@echo "==> Building test runner $(TEST_BIN)..."
 	$(LDC) $(D_TEST_MODULES) $(D_COMMON_FLAGS) $(D_CPU_FLAGS) -g -unittest $(D_SAN_FLAGS) \
 		-od=$(OBJ_DIR) \
 		tests/test_runner.d -of=$@
+
+# The vendored PEG generator's own suite (kept out of test_runner: slow and memory-hungry).
+NPEGGED_TEST_BIN := $(CONFIG_BIN_DIR)/test_npegged$(EXE)
+
+test-npegged: | $(CONFIG_BIN_DIR) $(OBJ_DIR)
+	@echo "==> Building and running npegged unit tests..."
+	$(LDC) -i=npegged $(D_COMMON_FLAGS) -g -unittest -main $(D_SAN_FLAGS) \
+		-od=$(OBJ_DIR)/npegged src/npegged/grammar.d -of=$(NPEGGED_TEST_BIN)
+	$(RUN_DIR)$(NPEGGED_TEST_BIN)
 
 # -----------------------------------------------------------------------------
 # Benchmarks (Isolated in build/$(BUILD)/bench/ & obj/)
@@ -513,6 +524,7 @@ help:
 	@echo "  make                     - Build standalone viewer ($(VIEWER_BIN)) [$(BUILD)]"
 	@echo "  make dist                - Package release bundle into $(DIST_DIR)/"
 	@echo "  make test [FULL=1]       - Build and run headless unit & integration tests"
+	@echo "  make test-npegged        - Build and run the vendored npegged unit tests"
 	@echo "  make bench               - Build and run all microbenchmarks"
 	@echo "  make bench-<name>        - Run specific benchmark (e.g., bench-scale, bench-routes)"
 	@echo "  make third-party         - Build vendored C dependencies (SDL3 via CMake)"

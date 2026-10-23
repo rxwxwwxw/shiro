@@ -6,14 +6,15 @@ module tests.test_village;
 
 import core.file;
 import core.stdc.stdio : printf;
-import story.dialogue;
+import story.program;
+import story.vm;
 import story.state;
 import story.td_link;
 import td.bot;
 import td.defs : TowerKind;
 import td.game;
 import tests.harness : Report;
-import tests.test_dialogue : storyPath;
+import tests.test_dialogue : compileShippedStory, storyPath;
 import village.bot;
 import village.plan;
 import village.walk;
@@ -35,8 +36,8 @@ private void finishTalk(ref VillageWorld w) @nogc nothrow @trusted {
 
 /// Walks to the villager speaking as `speaker` and talks the conversation through; false if the
 /// player never got there or nobody answered.
-private bool talkTo(ref VillageWorld w, ref const WalkGrid walk, ref VillageBot bot, ref const DialogueDb db,
-        const(char)[] speaker, ref int ticks) @nogc nothrow @trusted {
+private bool talkTo(ref VillageWorld w, ref const WalkGrid walk, ref VillageBot bot,
+        ref const StoryProgram db, const(char)[] speaker, ref int ticks) @nogc nothrow @trusted {
     int npc = -1;
     foreach (i, ref n; w.npcs)
         if (db.speakers[n.speaker].id == speaker)
@@ -100,15 +101,16 @@ void run(ref Report rep, int seeds) @nogc nothrow @trusted {
         ulong[2] hashes;
         RunModifiers mods;
         StoryState st;
-        DialogueDb db;
+        StoryProgram db;
         foreach (pass; 0 .. 2) {
             st = StoryState.init;
             internLinkVars(st);
-            if (db.load(f.text, st) != StoryError.none)
+            if (compileShippedStory(db, st) != StoryError.none)
                 break;
+            initialize(db, st);
             VillageWorld w;
             w.setup(&plan, &walk, &db, &st, seed * 7);
-            if (w.loadNpcs(f.text) != 5)
+            if (w.loadNpcs() != 5)
                 break;
             w.begin();
             immutable intro = w.talking;
@@ -172,7 +174,7 @@ void run(ref Report rep, int seeds) @nogc nothrow @trusted {
         recordRun(st, won, g.waveNo);
         VillageWorld home;
         home.setup(&plan, &walk, &db, &st, seed * 7);
-        home.loadNpcs(f.text);
+        home.loadNpcs();
         home.arriveFromTd(won);
         immutable scene = home.talking && home.talk.line.id == (won ? "return_won" : "return_lost");
         finishTalk(home);

@@ -1,12 +1,11 @@
 // Building interiors: what the player finds on stepping inside a landmark building (a title, a
 // backdrop image name, a description, who keeps the place, wares for sale, things to ask about),
-// read from the story file's "interiors" list. Strings are slices of the story text, which must
-// outlive the table. Purchases spend the story variable "coins" and set the ware's flag, so the
+// read from the story's `place` declarations. Strings are slices of the compiled program, which
+// must outlive the table. Purchases spend the story variable "coins" and set the ware's flag, so the
 // story's conditions can see what the player owns. Model layer: no SDL, @nogc nothrow.
 module village.interior;
 
-import core.json;
-import story.dialogue : DialogueDb;
+import story.program : StoryError, StoryProgram;
 import story.state;
 import village.plan : Landmark, landmarkByName, numLandmarks;
 
@@ -61,55 +60,30 @@ struct Interiors {
         return l >= 0 && l < numLandmarks && at[l].present ? &at[l] : null;
     }
 
-    /// Reads "interiors" and "coins" (starting money) from the story file, interning ware flags
-    /// and the coins variable into `st`. Returns the number of interiors, or -1 on an unknown
-    /// place or host.
-    int load(const(char)[] storyJson, ref const DialogueDb db, ref StoryState st) @nogc nothrow @trusted {
+    /// Copies the story's places, interning the coins variable into `st` (its starting value
+    /// comes from the story's `var coins = ...`). Returns the number of interiors, or -1 when a
+    /// place is not a village landmark.
+    int load(ref const StoryProgram db, ref StoryState st) @nogc nothrow @trusted {
         at[] = Interior.init;
-        Json j;
-        if (!j.parse(storyJson))
-            return -1;
         coinsVar = st.intern(varCoins);
-        immutable start = j.get(0, "coins");
-        if (start >= 0)
-            st.set(coinsVar, j.integer(start));
-        immutable list = j.get(0, "interiors");
-        foreach (i; 0 .. j.length(list)) {
-            immutable o = j.at(list, i);
-            immutable l = landmarkByName(j.str(j.get(o, "place")));
+        foreach (ref pl; db.places) {
+            immutable l = landmarkByName(pl.id);
             if (l < 0)
                 return -1;
             auto it = &at[l];
             it.present = true;
-            it.title = j.str(j.get(o, "title"));
-            it.image = j.str(j.get(o, "image"));
-            it.look = j.str(j.get(o, "look"));
-            immutable h = j.get(o, "host");
-            if (h >= 0) {
-                it.host = db.findSpeaker(j.str(h));
-                if (it.host < 0)
-                    return -1;
-            }
-            immutable wares = j.get(o, "wares");
-            foreach (k; 0 .. j.length(wares)) {
-                if (it.numWares == maxWares)
-                    break;
-                immutable w = j.at(wares, k);
-                auto ware = &it.wares[it.numWares++];
-                ware.name = j.str(j.get(w, "name"));
-                ware.desc = j.str(j.get(w, "desc"));
-                ware.price = j.integer(j.get(w, "price"));
-                ware.flag = st.intern(j.str(j.get(w, "flag")));
-            }
-            immutable topics = j.get(o, "topics");
-            foreach (k; 0 .. j.length(topics)) {
-                if (it.numTopics == maxTopics)
-                    break;
-                immutable t = j.at(topics, k);
-                it.topics[it.numTopics++] = Topic(j.str(j.get(t, "ask")), j.str(j.get(t, "answer")));
-            }
+            it.title = pl.title;
+            it.image = pl.image;
+            it.look = pl.look;
+            it.host = pl.host;
+            foreach (ref w; db.wares(pl))
+                if (it.numWares < maxWares)
+                    it.wares[it.numWares++] = Ware(w.name, w.desc, w.price, w.flag);
+            foreach (ref t; db.topics(pl))
+                if (it.numTopics < maxTopics)
+                    it.topics[it.numTopics++] = Topic(t.ask, t.answer);
         }
-        return j.length(list);
+        return cast(int)db.places.length;
     }
 
     /// Buys ware `index` of landmark `l`'s interior.
@@ -130,23 +104,28 @@ struct Interiors {
 }
 
 @nogc nothrow unittest {
-    immutable text = `{
-      "speakers": [{"id": "smith", "name": "Smith"}],
-      "nodes": [{"id": "a", "text": "hi"}],
-      "coins": 10,
-      "interiors": [
-        {"place": "smithy", "title": "Forge", "image": "smithy", "look": "Hot.", "host": "smith",
-         "wares": [{"name": "Nails", "desc": "Sharp.", "price": 4, "flag": "has_nails"},
-                   {"name": "Anvil", "price": 50, "flag": "has_anvil"}],
-         "topics": [{"ask": "Work?", "answer": "Always."}]},
-        {"place": "hall", "title": "Hall", "look": "Empty."}
-      ]
-    }`;
+    import story.compile : compileText;
+    import story.vm : initialize;
+
+    immutable text = `
+character smith "Smith"
+var coins = 10
+place smithy "Forge":
+    image smithy
+    host smith
+    look: Hot.
+    ware "Nails" 4 -> has_nails: Sharp.
+    ware "Anvil" 50 -> has_anvil: Heavy.
+    topic "Work?": Always.
+place hall "Hall":
+    look: Empty.
+`;
     StoryState st;
-    DialogueDb db;
-    assert(db.load(text, st) == 0);
+    StoryProgram db;
+    assert(compileText(db, st, text) == StoryError.none);
+    initialize(db, st);
     Interiors ins;
-    assert(ins.load(text, db, st) == 2);
+    assert(ins.load(db, st) == 2);
     const f = ins.of(Landmark.smithy);
     assert(f !is null && f.title == "Forge" && f.host == 0 && f.numWares == 2 && f.topics[0].answer == "Always.");
     assert(ins.of(Landmark.hall).host == -1 && ins.of(Landmark.market) is null);
@@ -156,6 +135,8 @@ struct Interiors {
     assert(st.named("has_nails") == 1 && ins.buy(Landmark.smithy, 0, st) == BuyResult.owned);
     assert(ins.buy(Landmark.hall, 0, st) == BuyResult.none);
 
+    StoryProgram moon;
+    assert(compileText(moon, st, "place moon:\n    look: Far.\n") == StoryError.none);
     Interiors bad;
-    assert(bad.load(`{"interiors": [{"place": "moon"}]}`, db, st) == -1);
+    assert(bad.load(moon, st) == -1);
 }

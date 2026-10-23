@@ -11,6 +11,7 @@
 //   ... -run tests/test_runner.d -- --full     (1,000 islands; slow)
 module tests.test_runner;
 
+import core.runtime : Runtime, UnitTestResult;
 import core.stdc.stdio : printf;
 import wfc.rules;
 import tests.harness;
@@ -24,7 +25,7 @@ import tests.test_village;
 
 // Pull every module's unit tests into the build.
 import core.bitset, core.noise, core.random, core.result, core.json, core.file;
-import story.state, story.script, story.events, story.dialogue, story.td_link;
+import story.pool, story.value, story.state, story.program, story.syntax, story.compile, story.vm, story.td_link;
 import village.walk, village.plan, village.world, village.bot;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
@@ -33,6 +34,29 @@ import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];
+
+/// Runs every module's unit tests except the vendored parser generator's (its exhaustive suite
+/// runs on its own via `make test-npegged`; under ASan it alone exceeds the memory ceiling).
+private UnitTestResult engineUnitTests() {
+    UnitTestResult r;
+    foreach (m; ModuleInfo) {
+        if (m is null || m.unitTest is null)
+            continue;
+        const n = m.name;
+        if (n.length >= 8 && n[0 .. 8] == "npegged.")
+            continue;
+        r.executed++;
+        m.unitTest()();
+        r.passed++;
+    }
+    r.runMain = true;
+    r.summarize = true;
+    return r;
+}
+
+shared static this() {
+    Runtime.extendedModuleUnitTester = &engineUnitTests;
+}
 
 enum uint timeoutSeconds = 900;
 enum size_t memoryCeilingMiB = 256;

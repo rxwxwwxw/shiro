@@ -10,7 +10,7 @@ import gfx.hex_mesh : MapMesh;
 import gfx.iso : IsoPoint;
 import gfx.sprites;
 import gfx.td_overlay : isoPerX, isoPerY, worldToScreen;
-import story.dialogue : DialogueDb;
+import story.program : StoryProgram;
 import td.defs : cellWorld;
 import village.world;
 import wfc.hex;
@@ -42,7 +42,7 @@ struct VillageOverlay {
     }
 
     /// Draws everyone; `alpha` (0..1) is the fraction of a tick since the last one.
-    void draw(SDL_Renderer* r, ref const VillageWorld w, ref const DialogueDb db, ref const Camera cam,
+    void draw(SDL_Renderer* r, ref const VillageWorld w, ref const StoryProgram db, ref const Camera cam,
             ref const MapMesh mesh, float alpha, float time) @nogc nothrow @trusted {
         immutable zoom = cam.zoom;
         Item[maxNpcs + 1] items;

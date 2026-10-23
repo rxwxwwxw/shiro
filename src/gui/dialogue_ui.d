@@ -10,7 +10,8 @@ import bindings.sdl3.sdl;
 import core.stdc.stdio : snprintf;
 import gfx.sdl_handles : Texture;
 import gui.nuklear_ui : NuklearContext;
-import story.dialogue;
+import story.program;
+import story.vm;
 import village.world;
 
 /// Bytes of text revealed per second while a line types out.
@@ -110,10 +111,10 @@ struct DialogueUi {
     }
 
     /// Figures, the box and the portrait (SDL, under the Nuklear text). Call before the UI renders.
-    void drawScene(SDL_Renderer* r, ref const VillageWorld w, ref const DialogueDb db, float viewW, float viewH) @nogc nothrow @trusted {
+    void drawScene(SDL_Renderer* r, ref const VillageWorld w, ref const StoryProgram db, float viewW, float viewH) @nogc nothrow @trusted {
         if (!w.talking)
             return;
-        const line = &w.talk.line();
+        const line = w.talk.line();
         const spk = w.talk.speaker;
         immutable b = layout(w, viewW, viewH);
         // The two in the scene: the player on the left, the villager (or whoever speaks) on the right.
@@ -188,12 +189,12 @@ struct DialogueUi {
     }
 
     /// Name, text and choices (Nuklear); clicks queue choose commands.
-    void drawUi(ref NuklearContext ui, ref const VillageWorld w, ref const DialogueDb db, ref VillageQueue q,
-            float viewW, float viewH) @nogc nothrow @trusted {
+    void drawUi(ref NuklearContext ui, ref const VillageWorld w, ref const StoryProgram db,
+            ref VillageQueue q, float viewW, float viewH) @nogc nothrow @trusted {
         if (!w.talking)
             return;
         auto ctx = ui.ctx;
-        const line = &w.talk.line();
+        const line = w.talk.line();
         const spk = w.talk.speaker;
         immutable b = layout(w, viewW, viewH);
         shiro_nk_dialogue_style(ctx, 1);
@@ -221,7 +222,7 @@ struct DialogueUi {
             return;
         immutable choices = w.talk.choiceCount;
         foreach (i; 0 .. choices) {
-            const c = &w.talk.choice(i);
+            const c = w.talk.choice(i);
             char[320] label = void;
             immutable len = snprintf(label.ptr, label.length, "%d.  %.*s", i + 1, cast(int)c.text.length, c.text.ptr);
             nk_layout_row_dynamic(ctx, 32, 1);

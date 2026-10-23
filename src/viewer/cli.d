@@ -49,7 +49,7 @@ struct ViewerConfig {
     /// --scene was given (else the title menu opens, unless this is a screenshot or bench run);
     /// `menu`: --scene menu; `debugView`: --scene debug (tower defense with the developer panel).
     bool sceneGiven, menu, debugView;
-    /// Story file (NUL-terminated); empty: assets/story/village.json.
+    /// Story file (NUL-terminated); empty: assets/story/main.story.
     char[1024] story = 0;
     bool hasStory;
     /// Open a conversation with this villager (a speaker id) at start, for screenshots.
@@ -86,7 +86,7 @@ immutable string usage = "usage: shiro_viewer [options]
   --bot                  let the scripted bot build and upgrade towers
   --ticks N              advance the game N ticks (30 per second) before the first frame
   --scene NAME           menu (default), village, td, or debug (td with the developer panel)
-  --story PATH           story file for the village (default assets/story/village.json)
+  --story PATH           story entry file (default assets/story/main.story)
   --talk ID              open a conversation with villager ID at start (e.g. elder)
   --enter PLACE          step into PLACE's building at start (e.g. smithy)
   --section N            menu section inside: 0 talk, 1 ask, 2 trade, 3 look, 4 leave
@@ -409,9 +409,9 @@ Result!(ViewerConfig, CliError) parseArgs(const string[] args) @nogc nothrow @tr
     // The village is the default scene; --scene td boots straight into tower defense.
     immutable string[0] none;
     assert(parseArgs(none[]).value.village);
-    immutable string[6] a = ["--scene", "td", "--story", "my/story.json", "--talk", "elder"];
+    immutable string[6] a = ["--scene", "td", "--story", "my/story.stor", "--talk", "elder"];
     auto r = parseArgs(a[]);
-    assert(r.isOk && !r.value.village && r.value.hasStory && r.value.story[0 .. 14] == "my/story.json\0");
+    assert(r.isOk && !r.value.village && r.value.hasStory && r.value.story[0 .. 14] == "my/story.stor\0");
     assert(r.value.hasTalk && r.value.talk[0 .. 6] == "elder\0");
     immutable string[2] bad = ["--scene", "moon"];
     assert(parseArgs(bad[]).error == CliError.badScene);
