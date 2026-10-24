@@ -30,7 +30,11 @@ enum TriggerKind : ubyte {
     /// The player walks into the village zone `target`.
     enter,
     /// The player comes back from tower defense; `target` is "won" or "lost" (empty: either).
-    returned
+    returned,
+    /// The campaign clock reaches slot `target` (dawn .. night; empty: every slot).
+    slot,
+    /// A new day `target` begins (mon .. sun; empty: every day), at dawn.
+    day
 }
 
 struct Speaker {
@@ -97,6 +101,8 @@ enum Op : ubyte {
     event,
     /// Presentation command (sub: PresentKind) with string args `a`, `b` (-1: none).
     present,
+    /// Spends expression `a` slots of the campaign clock (the game advances it after the line).
+    spend,
     /// `container[key] op= value`: expressions `a` (container), `b` (key), `c` (value; -1:
     /// `true`), sub: AssignOp.
     store,
@@ -251,7 +257,9 @@ enum StoryEventKind : ubyte {
     /// `event name [arg]`: `id` is the event id, `num` the argument (0 without one).
     custom,
     /// A presentation command (`present`), with its string args.
-    present
+    present,
+    /// `spend n`: `num` slots of time pass.
+    spend
 }
 
 struct StoryEvent {

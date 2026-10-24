@@ -22,15 +22,18 @@ import tests.test_routes;
 import tests.test_td_sim;
 import tests.test_dialogue;
 import tests.test_village;
+import tests.test_campaign;
 
 // Pull every module's unit tests into the build.
 import core.bitset, core.noise, core.random, core.result, core.json, core.file;
-import story.pool, story.value, story.state, story.program, story.syntax, story.compile, story.vm, story.td_link;
+import story.pool, story.value, story.state, story.program, story.syntax, story.compile, story.vm,
+    story.td_link, story.catalog_load;
+import campaign.calendar, campaign.campaign;
 import village.walk, village.plan, village.world, village.bot;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,
     viewer.commands, gfx.iso, gfx.camera, gfx.pick, gfx.hex_mesh, wfc.solver, wfc.tile_data,
-    wfc.tile_map, td.defs, td.spatial, td.waves, td.board, td.game, td.bot, wfc.reveal, wfc.terrain;
+    wfc.tile_map, td.defs, td.catalog, td.spatial, td.waves, td.board, td.game, td.bot, wfc.reveal, wfc.terrain;
 
 /// Run integration main after the unit tests (the default under -unittest is tests only).
 extern (C) __gshared string[] rt_options = ["testmode=run-main"];
@@ -91,6 +94,8 @@ int main(string[] args) {
     tests.test_dialogue.run(rep);
     printf("village (%s)\n", full ? "full".ptr : "quick".ptr);
     tests.test_village.run(rep, full ? 40 : 6);
+    printf("campaign\n");
+    tests.test_campaign.run(rep);
 
     rep.check(withinMemory(memoryCeilingMiB, "integration"), "peak memory under ceiling");
     printf("integration: %d passed, %d failed, peak RSS %d MiB (ceiling %d MiB, timeout %d s)\n",

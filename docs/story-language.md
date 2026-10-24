@@ -68,8 +68,17 @@ on return won:                              # return takes won / lost / nothing 
     -> return_won
 ```
 
-Kinds: `start`, `talk <character>`, `enter <zone>`, `return [won|lost]`. The first matching
-trigger in file order (imports inlined where they appear) fires.
+Kinds: `start`, `talk <character>`, `enter <zone>`, `return [won|lost]`, `day [mon..sun]` (at dawn),
+`slot [dawn|morning|midday|afternoon|evening|night]`. The first matching trigger in file order
+(imports inlined where they appear) fires.
+
+## The week loop
+
+The campaign clock (`src/campaign/`) runs weeks of seven days of six slots, starting Monday at
+dawn. Scripts read `week`, `today` (`:mon` .. `:sun`) and `time` (`:dawn` .. `:night`). `spend N`
+in a scene lets N slots pass once the line is done; talking is otherwise free. `data campaign =
+{weeks: 6}` sets the campaign length, `data actions = {rest: 1, ...}` what game actions cost.
+Wednesday night the attack is planned; Saturday afternoon it comes.
 
 ## Scenes
 
@@ -97,7 +106,7 @@ label elder_hi:
 
 Statements: `-> label` / `jump label` (`.sub` = local), `call label`, `return` (ends the
 conversation when nothing called), `end`, `set x`, `set x = e`, `clear x`, `x = e`,
-`x += e` (`-= *= /= %=`), `event name [number]`, `show who [mood]`, `hide who`, `scene name`,
+`x += e` (`-= *= /= %=`), `event name [number]`, `spend n`, `show who [mood]`, `hide who`, `scene name`,
 `play music|sound "path"`, `stop music|sound`, `battle [name]`. Presentation commands and events
 reach the controller as `StoryEvent`s. A label falls off its end as `return`.
 

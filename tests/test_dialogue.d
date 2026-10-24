@@ -5,6 +5,7 @@ module tests.test_dialogue;
 import core.file;
 import core.result : EngineError;
 import core.stdc.stdio : printf;
+import campaign.campaign : internClockVars;
 import story.catalog_load;
 import story.compile;
 import story.program;
@@ -24,6 +25,7 @@ StoryError compileShippedStory(ref StoryProgram p, ref StoryState st) @nogc noth
     }
 
     internLinkVars(st);
+    internClockVars(st);
     return compileStory(p, st, storyPath, &loader);
 }
 

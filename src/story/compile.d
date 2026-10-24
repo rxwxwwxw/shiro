@@ -12,6 +12,7 @@ module story.compile;
 
 import core.file : FileBytes;
 import core.stdc.stdio : snprintf;
+import campaign.calendar : dayNames, nameIndex, slotNames;
 import core.stdc.stdlib : strtod;
 import story.pool;
 import story.program;
@@ -1418,13 +1419,18 @@ struct Compiler {
         t.entry = -1;
         const kind = src(s.children[0]);
         t.on = kind == "start" ? TriggerKind.start : (kind == "talk" ? TriggerKind.talk : (kind == "enter"
-                ? TriggerKind.enter : TriggerKind.returned));
+                ? TriggerKind.enter : (kind == "slot" ? TriggerKind.slot : (kind == "day"
+                ? TriggerKind.day : TriggerKind.returned))));
         if (const tg = child(s, "OnTarget"))
             t.target = keep(src(*tg));
         if ((t.on == TriggerKind.talk || t.on == TriggerKind.enter) && t.target.length == 0)
             error(i, 0, "on %.*s needs a target", cast(int)kind.length, kind.ptr);
         if (t.on == TriggerKind.returned && t.target.length && t.target != "won" && t.target != "lost")
             error(i, 0, "on return takes won or lost");
+        if (t.on == TriggerKind.slot && t.target.length && nameIndex(t.target, slotNames[]) < 0)
+            error(i, 0, "on slot takes dawn, morning, midday, afternoon, evening or night");
+        if (t.on == TriggerKind.day && t.target.length && nameIndex(t.target, dayNames[]) < 0)
+            error(i, 0, "on day takes mon, tue, wed, thu, fri, sat or sun");
         if (child(s, "Once")) {
             char[24] nb;
             immutable n = snprintf(nb.ptr, nb.length, "once#%u", p.triggers_.length);
@@ -1672,6 +1678,9 @@ struct Compiler {
             }
         case "CallStmt":
             emit(Ins(Op.exec, 0, expression(s.children[0], k)));
+            return;
+        case "Spend":
+            emit(Ins(Op.spend, 0, expression(s.children[0], k)));
             return;
         case "EventStmt": {
                 immutable id = eventId(src(s.children[0]));

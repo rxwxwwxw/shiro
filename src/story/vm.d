@@ -648,6 +648,14 @@ struct StoryRunner {
                 maybeCollect(st);
                 pc++;
                 break;
+            case Op.spend: {
+                    StoryEvent e;
+                    e.kind = StoryEventKind.spend;
+                    e.num = toNumber(evaluate(*prog, ins.a, st));
+                    ev.push(e);
+                    pc++;
+                    break;
+                }
             case Op.present: {
                     StoryEvent e;
                     e.kind = StoryEventKind.present;

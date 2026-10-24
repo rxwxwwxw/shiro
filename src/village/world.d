@@ -268,6 +268,15 @@ struct VillageWorld {
         return false;
     }
 
+    /// Runs scene code `entry` as a conversation with nobody in particular (a campaign beat);
+    /// false while another conversation is open or when the scene shows no line.
+    bool playScene(int entry) @nogc nothrow @trusted {
+        if (talk_.active || entry < 0)
+            return false;
+        openTalk(entry, -1);
+        return talk_.active;
+    }
+
     // ---- read-only views ----
 
     const(Npc)[] npcs() const return @nogc nothrow @trusted {

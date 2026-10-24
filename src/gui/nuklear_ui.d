@@ -9,6 +9,8 @@ import core.stdc.stdio : snprintf;
 import gfx.hex_mesh : Lod, MapMesh;
 import td.defs;
 import td.game;
+import campaign.calendar : dayTitles, slotTitles;
+import campaign.campaign : Campaign;
 import story.td_link : unlockHint;
 import viewer.commands;
 import wfc.decorations : buildingDefs, DecoKind;
@@ -533,6 +535,26 @@ private bool hudWindow(nk_context* ctx, const(char)* name, float x, float y, flo
 /// The player's view of a tower defense run: a status bar on top, the build bar at the bottom,
 /// a card for the selected tower, and a banner when the run is over. `menuOpen`: a menu covers
 /// the game, so only the status bar is drawn (no buttons that would act under it).
+/// The campaign clock: week, day, time of day and how long until Saturday's battle.
+void drawClock(ref NuklearContext ui, ref const Campaign c, float viewW) @nogc nothrow @trusted {
+    auto ctx = ui.ctx;
+    shiro_nk_game_style(ctx, 1);
+    if (!hudWindow(ctx, "hud_clock", viewW - 250, 10, 240, 64))
+        return;
+    nk_layout_row_dynamic(ctx, 18, 1);
+    labelf(ctx, "Week %d of %d - %s, %s", c.cal.week, c.weeks, dayTitles[c.cal.day].ptr, slotTitles[c.cal.slot].ptr);
+    immutable left = c.slotsToBattle;
+    if (c.over)
+        labelf(ctx, "The campaign is over");
+    else if (c.battleDue)
+        nk_label_colored(ctx, "The attack is here!", NK_TEXT_LEFT, nk_color(255, 120, 100, 255));
+    else if (left >= 0)
+        labelf(ctx, "Attack in %d slot%s (R rests)", left, left == 1 ? "".ptr : "s".ptr);
+    else
+        labelf(ctx, "Aftermath (R rests)");
+    nk_end(ctx);
+}
+
 void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref GameQueue gq,
         ref const Game g, float viewW, float viewH) @nogc nothrow @trusted {
     auto ctx = ui.ctx;

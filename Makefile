@@ -157,13 +157,13 @@ endif
 
 # D Compiler Flags (LDC2)
 D_MODULES := -i=wfc -i=td -i=gfx -i=gui -i=viewer -i=bindings -i=app \
-             -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
+             -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=campaign -i=npegged
 
 D_TEST_MODULES := -i=wfc -i=td -i=tests -i=viewer -i=gfx \
-                  -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
+                  -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=campaign -i=npegged
 
 D_BENCH_MODULES := -i=wfc -i=td -i=village \
-                   -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=npegged
+                   -i=core.bitset -i=core.noise -i=core.random -i=core.result -i=core.json -i=core.file -i=story -i=village -i=campaign -i=npegged
 
 D_COMMON_FLAGS := -I. -Isrc -defaultlib=druntime-ldc -fno-exceptions -w
 
@@ -462,7 +462,7 @@ vgc:
 	@echo "==> Checking zero GC allocations in simulation hot paths (-vgc)..."
 	$(LDC) -c -o- -vgc $(D_COMMON_FLAGS) \
 		src/core/random.d src/core/bitset.d src/core/noise.d src/core/result.d src/core/json.d src/core/file.d \
-		src/wfc/*.d src/td/*.d src/story/*.d src/village/*.d
+		src/wfc/*.d src/td/*.d src/story/*.d src/village/*.d src/campaign/*.d
 	@echo "==> GC check passed: zero allocations detected."
 
 check-nophobos:

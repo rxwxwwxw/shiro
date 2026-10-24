@@ -20,7 +20,7 @@ StoryLine:
     Stmt        <- Import / TypeDecl / CharDecl / PlaceDecl / VarDecl / DataDecl / DefDecl / On
                  / LabelDecl / SubLabel
                  / Option / Goto / Call / Return / End / If / Elif / Else / For
-                 / SetStmt / ClearStmt / EventStmt / Show / Hide / SceneCmd / Play / StopCmd / Battle
+                 / SetStmt / ClearStmt / EventStmt / Spend / Show / Hide / SceneCmd / Play / StopCmd / Battle
                  / Ware / Topic / Prop / Derived / Assign / CallStmt / Say / Narrate
 
     Import      <- "import" Sp1 String
@@ -35,7 +35,7 @@ StoryLine:
     DefDecl     <- "def" Sp1 Name Sp "(" Sp (Name (Sp "," Sp Name)*)? Sp ")" Sp ":"
 
     On          <- "on" Sp1 TrigKind (Sp1 OnTarget)? (Sp1 Once)? (Sp1 "if" Sp1 Expr)? Sp (OnGoto / OnBlock)
-    TrigKind    <~ ("start" / "talk" / "enter" / "return") !NameChar
+    TrigKind    <~ ("start" / "talk" / "enter" / "return" / "slot" / "day") !NameChar
     OnTarget    <~ !(("once" / "if") !NameChar) [a-zA-Z_] NameChar*
     Once        <- "once" !NameChar
     OnGoto      <- "->" Sp Target
@@ -62,6 +62,7 @@ StoryLine:
     SetStmt     <- "set" Sp1 Path (Sp "=" Sp Expr)?
     ClearStmt   <- "clear" Sp1 Path
     EventStmt   <- "event" Sp1 Name (Sp1 Expr)?
+    Spend       <- "spend" Sp1 Expr
     Show        <- "show" Sp1 Name (Sp1 Name)?
     Hide        <- "hide" Sp1 Name
     SceneCmd    <- "scene" Sp1 Name
@@ -119,7 +120,7 @@ StoryLine:
     Keyword     <- ("import" / "type" / "character" / "place" / "var" / "data" / "def" / "on" / "label"
                  / "if" / "elif"
                  / "else" / "set" / "clear" / "event" / "show" / "hide" / "scene" / "play" / "stop"
-                 / "battle" / "call" / "return" / "end" / "jump" / "for" / "and" / "or" / "not" / "true"
+                 / "battle" / "spend" / "call" / "return" / "end" / "jump" / "for" / "and" / "or" / "not" / "true"
                  / "false" / "nil" / "in") !NameChar
     NameChar    <- [a-zA-Z0-9_]
     SignedNumber <~ "-"? Number
@@ -173,6 +174,9 @@ version (unittest) {
     assert(parsesAs("on talk elder if not met_elder -> elder_hi", "On"));
     assert(parsesAs("on return won:", "On"));
     assert(parsesAs("on return:", "On"));
+    assert(parsesAs("on day wed:", "On"));
+    assert(parsesAs("on slot night once -> nightfall", "On"));
+    assert(parsesAs("spend 2", "Spend"));
     assert(parsesAs("label elder_hi:", "LabelDecl"));
     assert(parsesAs(".ask:", "SubLabel"));
     assert(parsesAs("* I will hold it.", "Option"));

@@ -26,6 +26,7 @@ import gui.interior_ui;
 import gui.menus : drawMenus;
 import village.interior : Interiors;
 import gui.nuklear_ui;
+import campaign.campaign : Campaign, internClockVars;
 import story.catalog_load : loadCatalog, LoadError;
 import story.program;
 import story.vm;
@@ -94,6 +95,10 @@ private struct Viewer {
     StoryProgram dialogueDb;
     /// Tower defense rules: from the story's `data` tables when it has them, else the defaults.
     Catalog rules;
+    /// The week loop (story mode).
+    Campaign campaign;
+    /// The run in progress is Saturday's battle.
+    bool weeklyBattle;
     StoryState storyState;
     VillagePlan plan;
     WalkGrid walk;
@@ -455,6 +460,7 @@ private struct Viewer {
         }
 
         internLinkVars(storyState);
+        internClockVars(storyState);
         immutable err = compileStory(dialogueDb, storyState, path[0 .. len], &loader);
         foreach (ref d; dialogueDb.diagnostics)
             fprintf(stderr, "%.*s:%u:%u: %s: %.*s\n", cast(int)d.file.length, d.file.ptr, d.line,
@@ -468,6 +474,7 @@ private struct Viewer {
         initialize(dialogueDb, storyState);
         if (interiors.load(dialogueDb, storyState) < 0)
             fprintf(stderr, "story: a place is not a village landmark\n");
+        campaign.setup(&dialogueDb, &storyState);
         LoadError rulesErr;
         if (!loadCatalog(storyState, rules, rulesErr))
             fprintf(stderr, "story rules: %.*s; playing the built-in rules\n",
@@ -543,6 +550,9 @@ private struct Viewer {
         }
         storyState.reset(villageSeed);
         initialize(dialogueDb, storyState);
+        campaign.setup(&dialogueDb, &storyState);
+        campaign.begin();
+        weeklyBattle = false;
         state.screen = Screen.none;
         state.debugView = false;
         state.speed = 1;
@@ -568,6 +578,12 @@ private struct Viewer {
             return;
         immutable won = game.active && game.status == GameStatus.won;
         recordRun(storyState, won, game.active ? game.waveNo : 0);
+        if (weeklyBattle) {
+            // Saturday is over: the clock moves on to the evening.
+            weeklyBattle = false;
+            campaign.battleOver();
+            campaign.spend(1);
+        }
         enterVillage(sdl, true, won);
     }
 
@@ -626,8 +642,20 @@ private struct Viewer {
             if (e.kind == VillageEventKind.leaveWest)
                 queue.push(CommandKind.regenerate);
         foreach (ref e; world.storyEvents.items[0 .. world.storyEvents.length]) {
+            if (e.kind == StoryEventKind.spend) {
+                campaign.spend(e.num > 0 ? cast(int)e.num : 0);
+                continue;
+            }
             const n = e.kind == StoryEventKind.custom ? dialogueDb.eventNames[e.id] : e.a;
             printf("story event: %.*s\n", cast(int)n.length, n.ptr);
+        }
+        // Campaign beats wait for the conversation on screen to end.
+        int scene;
+        if (!world.talking && campaign.popScene(scene))
+            world.playScene(scene);
+        if (!world.talking && campaign.battleDue && campaign.pendingScenes == 0 && !weeklyBattle) {
+            weeklyBattle = true;
+            queue.push(CommandKind.regenerate);
         }
         immutable rate = dt * 6 > 1 ? 1.0f : cast(float)(dt * 6);
         followPlayer(rate);
@@ -676,6 +704,11 @@ private struct Viewer {
                 held[] = false;
                 state.screen = Screen.pause;
             }
+            break;
+        case SDLK_R:
+            // Rest: let a slot of time pass.
+            if (down && !e.key.repeat && !world.talking)
+                campaign.act("rest");
             break;
         case SDLK_TAB:
             if (down && world.inside >= 0 && !world.talking)
@@ -1165,6 +1198,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
                 v.dialogue.skipTyping(v.world);
             v.interior.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
             v.dialogue.drawUi(ui, v.world, v.dialogueDb, v.villageQueue, viewW, viewH);
+            drawClock(ui, v.campaign, viewW);
         }
 
         // A --screenshot run waits a few frames: Nuklear lays new windows out on their first one.
