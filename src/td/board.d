@@ -330,7 +330,7 @@ struct Board {
 
     /// Range bonus in percent for a tower on cell `i`: its height over the nearest road within
     /// four steps.
-    int highGroundPct(size_t i) const @nogc nothrow @trusted {
+    int highGroundPct(size_t i, int perLevel = highGroundPctPerLevel, int capPct = highGroundCapPct) const @nogc nothrow @trusted {
         CubeCoord[61] ring = void;
         immutable c = rect.cellAt(i);
         foreach (r; 1 .. 5) {
@@ -345,8 +345,8 @@ struct Board {
             }
             if (roadLevel != int.max) {
                 immutable diff = levels[i] - roadLevel;
-                immutable pct = diff * highGroundPctPerLevel;
-                return pct < 0 ? 0 : (pct > highGroundCapPct ? highGroundCapPct : pct);
+                immutable pct = diff * perLevel;
+                return pct < 0 ? 0 : (pct > capPct ? capPct : pct);
             }
         }
         return 0;

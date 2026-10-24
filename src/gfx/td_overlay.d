@@ -12,6 +12,7 @@ import gfx.camera;
 import gfx.hex_mesh : MapMesh;
 import gfx.iso : IsoPoint, levelStep, rowPitch, squash;
 import gfx.sprites : spriteAnchor, spriteCell, spriteCols, spriteFacing, spriteFrames, spriteIndex, spriteSpan;
+import td.catalog : Catalog;
 import td.defs;
 import td.game;
 import wfc.hex : CubeCoord, cubeToOffset, HexDir;
@@ -251,14 +252,15 @@ struct TdOverlay {
 
         // Range rings: the selected tower, and the tower about to be built.
         if (const sel = g.towerAt(inp.selCol, inp.selRow))
-            if (sel.kind != TowerKind.mine)
+            if (g.catalog.fights(sel.kind))
                 rangeRing(cam, mesh, sel.col, sel.row, g.rangeOf(*sel), SDL_FColor(1, 1, 1,
                         0.06f), SDL_FColor(1, 0.95f, 0.6f, 0.75f));
-        if (inp.buildKind >= 0 && inp.buildKind != TowerKind.mine && inp.hoverCol >= 0) {
+        if (inp.buildKind >= 0 && inp.buildKind < g.catalog.numTowers
+                && g.catalog.fights(cast(TowerKind)inp.buildKind) && inp.hoverCol >= 0) {
             immutable ok = g.canPlace(cast(TowerKind)inp.buildKind, inp.hoverCol, inp.hoverRow) == CommandError.none;
             immutable i = cast(size_t)inp.hoverRow * g.board.rect.cols + inp.hoverCol;
             immutable bonus = g.board.inside(inp.hoverCol, inp.hoverRow) ? g.board.highGroundPct(i) : 0;
-            immutable range = towerStats(cast(TowerKind)inp.buildKind, Stage.lv1).range * (100 + bonus) / 100;
+            immutable range = g.catalog.tower(cast(TowerKind)inp.buildKind, Stage.lv1).range * (100 + bonus) / 100;
             rangeRing(cam, mesh, inp.hoverCol, inp.hoverRow, range, SDL_FColor(ok ? 0.4f : 1, ok
                     ? 1 : 0.3f, 0.4f, 0.07f), ok ? SDL_FColor(0.5f, 1, 0.5f, 0.8f) : SDL_FColor(1, 0.35f, 0.3f, 0.8f));
         }
@@ -279,14 +281,14 @@ struct TdOverlay {
         qsort(keys, nk, Key.sizeof, &cmpKey);
         nsv = nsi = 0;
         foreach (k; 0 .. nk)
-            drawCreep(cam, mesh, creeps[keys[k].id], alpha, t, false);
+            drawCreep(cam, mesh, g.catalog, creeps[keys[k].id], alpha, t, false);
         if (nsi > 0) {
             // Shadows (and anything before them) go under the sprites.
             flush(r);
             SDL_RenderGeometry(r, sprites, sv, cast(int)nsv, si, cast(int)nsi);
         }
         foreach (k; 0 .. nk)
-            drawCreep(cam, mesh, creeps[keys[k].id], alpha, t, true);
+            drawCreep(cam, mesh, g.catalog, creeps[keys[k].id], alpha, t, true);
 
         foreach (ref p; g.projectiles)
             if (p.alive)
@@ -394,9 +396,11 @@ struct TdOverlay {
         }
     }
 
-    private void drawCreep(ref const Camera cam, ref const MapMesh mesh, ref const Creep c,
-            float alpha, float t, bool barPass) @nogc nothrow @trusted {
-        immutable look = &creepLooks[c.kind];
+    private void drawCreep(ref const Camera cam, ref const MapMesh mesh, ref const Catalog cat,
+            ref const Creep c, float alpha, float t, bool barPass) @nogc nothrow @trusted {
+        // Modded kinds borrow the looks of a built-in kind.
+        immutable kind = cat.creeps[c.kind].look;
+        immutable look = &creepLooks[kind];
         immutable x = c.px + (c.x - c.px) * alpha, y = c.py + (c.y - c.py) * alpha;
         immutable rad = look.radius * zoom;
         immutable ground = worldToScreen(cam, mesh, x, y, 0);
@@ -425,7 +429,7 @@ struct TdOverlay {
         disc(ground.x + rad * 0.2f, ground.y, rad * 0.95f, rad * 0.95f * squash, SDL_FColor(0, 0, 0,
                 0.35f), SDL_FColor(0, 0, 0, 0), 10);
         if (sprites !is null) {
-            drawSprite(c, ground, x, y, t);
+            drawSprite(c, kind, ground, x, y, t);
             return;
         }
         SDL_FColor body = look.body, rim = look.rim;
@@ -465,9 +469,9 @@ struct TdOverlay {
             disc(ex - px + dx * er * 0.4f, ey - py, er * 0.5f, er * 0.5f, SDL_FColor(0.05f, 0.05f, 0.1f,
                     1), SDL_FColor(0.05f, 0.05f, 0.1f, 1), 5);
         }
-        if (c.kind == CreepKind.brute)
+        if (kind == CreepKind.brute)
             ring(top.x, top.y, rad, rad, rad * 0.16f, SDL_FColor(0.75f, 0.75f, 0.8f, 0.9f), 14);
-        if (c.kind == CreepKind.boss) {
+        if (kind == CreepKind.boss) {
             // Crown.
             immutable cy = top.y - rad * 0.95f;
             foreach (k; 0 .. 3) {
@@ -489,7 +493,7 @@ struct TdOverlay {
 
     /// The creep as a pre-rendered sprite: facing from its motion, walk frame from time, status
     /// effects as a color wash.
-    private void drawSprite(ref const Creep c, IsoPoint ground, float x, float y, float t) @nogc nothrow @trusted {
+    private void drawSprite(ref const Creep c, CreepKind kind, IsoPoint ground, float x, float y, float t) @nogc nothrow @trusted {
         immutable gx = (c.x - c.px) * isoPerX, gy = -(c.y - c.py) * isoPerY;
         immutable facing = spriteFacing(gx, gy);
         int frame = 0;
@@ -497,7 +501,7 @@ struct TdOverlay {
             immutable rate = c.slowTicks > 0 ? 8.0f * (100 - c.slowPct) / 100.0f : 8.0f;
             frame = cast(int)(t * rate + c.serial * 0.37f) % spriteFrames;
         }
-        immutable i = spriteIndex(c.kind, facing, frame);
+        immutable i = spriteIndex(kind, facing, frame);
         immutable u0 = (i % spriteCols) * spriteCell / atlasW, v0 = (i / spriteCols) * spriteCell / atlasH;
         immutable size = spriteSpan * zoom;
         SDL_FColor tint = SDL_FColor(1, 1, 1, 1);

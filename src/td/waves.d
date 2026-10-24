@@ -3,6 +3,7 @@
 // Headless Model.
 module td.waves;
 
+import td.catalog;
 import td.defs;
 
 enum int maxWaveSpawns = 512;
@@ -31,19 +32,20 @@ struct Wave {
 }
 
 int waveBudget(int wave) @nogc nothrow pure @safe {
-    return 60 + 25 * wave + 2 * wave * wave;
+    return defaultCatalog.waveBudget(wave);
 }
 
-/// Wave from which each creep kind may appear (the boss is added separately).
-private immutable int[numCreepKinds] unlockWave = [1, 3, 6, 4, int.max];
-private immutable int[numCreepKinds] pickWeight = [5, 3, 2, 2, 0];
-enum int swarmPack = 5;
-enum int bossEvery = 10;
+/// Wave `wave` under the rules in `cat`: spends the wave's budget on the creep kinds unlocked so
+/// far (by pick weight, in runs), then adds a boss every `bossEvery` waves.
+void buildWave(ref const Catalog cat, int wave, uint seed, ref Wave w) @nogc nothrow pure @safe {
+    buildWave(cat, wave, seed, cat.waveBudget(wave), null, w);
+}
 
-void buildWave(int wave, uint seed, ref Wave w) @nogc nothrow pure @safe {
+/// As above with an explicit `budget` and, when not null, pick weights per creep kind replacing
+/// the catalog's (unlock waves still apply; the planner uses this to aim a wave).
+void buildWave(ref const Catalog cat, int wave, uint seed, int budget, scope const(int)[] weights, ref Wave w) @nogc nothrow pure @safe {
     w.number = wave;
     w.count = 0;
-    int budget = waveBudget(wave);
     int t = 0;
     uint draw = 0;
     uint rnd() {
@@ -54,59 +56,78 @@ void buildWave(int wave, uint seed, ref Wave w) @nogc nothrow pure @safe {
         if (w.count == maxWaveSpawns)
             return;
         w.spawns[w.count++] = Spawn(t, k, src);
-        t += creepTable[k].gap;
+        t += cat.creep(k).gap;
     }
 
-    int weightSum = 0;
-    foreach (k; 0 .. numCreepKinds)
-        if (wave >= unlockWave[k])
-            weightSum += pickWeight[k];
+    int weightOf(int k) {
+        if (cat.creeps[k].boss || wave < cat.creeps[k].unlockWave)
+            return 0;
+        return weights.length ? (k < weights.length && weights[k] > 0 ? weights[k] : 0) : cat.creeps[k].pickWeight;
+    }
+
+    int weightSum = 0, cheapest = int.max, biggestRun = 3;
+    foreach (k; 0 .. cat.numCreeps) {
+        // Room is kept for the biggest pack of any kind, so a wave's length does not depend on
+        // which kinds are unlocked yet.
+        if (cat.creeps[k].pack > biggestRun)
+            biggestRun = cat.creeps[k].pack;
+        if (weightOf(k) > 0) {
+            weightSum += weightOf(k);
+            if (cat.creeps[k].stats.cost > 0 && cat.creeps[k].stats.cost < cheapest)
+                cheapest = cat.creeps[k].stats.cost;
+        }
+    }
     // Runs of one kind from one source read as groups rather than noise.
-    while (budget >= creepTable[CreepKind.swarm].cost && w.count < maxWaveSpawns - swarmPack) {
+    while (weightSum > 0 && budget >= cheapest && w.count < maxWaveSpawns - biggestRun) {
         int pick = cast(int)(rnd() % cast(uint)weightSum);
-        CreepKind k = CreepKind.grunt;
-        foreach (kk; 0 .. numCreepKinds) {
-            if (wave < unlockWave[kk])
+        int k = -1;
+        foreach (kk; 0 .. cat.numCreeps) {
+            immutable wk = weightOf(kk);
+            if (wk == 0)
                 continue;
-            if (pick < pickWeight[kk]) {
-                k = cast(CreepKind)kk;
+            if (pick < wk) {
+                k = kk;
                 break;
             }
-            pick -= pickWeight[kk];
+            pick -= wk;
         }
         // Out of budget for that kind: fall back to the cheapest unlocked one, or stop.
-        if (budget < creepTable[k].cost) {
+        if (budget < cat.creeps[k].stats.cost) {
             bool found = false;
-            foreach (kk; 0 .. numCreepKinds)
-                if (wave >= unlockWave[kk] && pickWeight[kk] > 0 && budget >= creepTable[kk].cost
-                        && (!found || creepTable[kk].cost < creepTable[k].cost)) {
-                    k = cast(CreepKind)kk;
+            foreach (kk; 0 .. cat.numCreeps)
+                if (weightOf(kk) > 0 && budget >= cat.creeps[kk].stats.cost && (!found
+                        || cat.creeps[kk].stats.cost < cat.creeps[k].stats.cost)) {
+                    k = kk;
                     found = true;
                 }
             if (!found)
                 break;
         }
         immutable src = cast(ubyte)(rnd() % 8);
-        immutable run = k == CreepKind.swarm ? swarmPack : 1 + cast(int)(rnd() % 3);
+        immutable run = cat.creeps[k].pack > 0 ? cat.creeps[k].pack : 1 + cast(int)(rnd() % 3);
+        immutable cost = cat.creeps[k].stats.cost;
         foreach (i; 0 .. run) {
-            if (budget < creepTable[k].cost)
+            if (budget < cost)
                 break;
-            budget -= creepTable[k].cost;
-            add(k, src);
+            budget -= cost;
+            add(cast(CreepKind)k, src);
         }
         t += 20;
     }
-    if (wave % bossEvery == 0) {
-        t += 60;
-        add(CreepKind.boss, cast(ubyte)(rnd() % 8));
-    }
+    if (cat.econ.bossEvery > 0 && wave % cat.econ.bossEvery == 0)
+        foreach (k; 0 .. cat.numCreeps)
+            if (cat.creeps[k].boss) {
+                t += 60;
+                add(cast(CreepKind)k, cast(ubyte)(rnd() % 8));
+                break;
+            }
 }
 
 @nogc nothrow pure @safe unittest {
     Wave a, b;
     foreach (wave; 1 .. 31) {
-        buildWave(wave, 7, a);
-        buildWave(wave, 7, b);
+        buildWave(defaultCatalog, wave, 7, a);
+        buildWave(defaultCatalog, wave, 7, b);
         assert(a.count > 0 && a.count == b.count);
         int spent = 0, bosses = 0;
         foreach (i; 0 .. a.count) {
@@ -119,10 +140,10 @@ void buildWave(int wave, uint seed, ref Wave w) @nogc nothrow pure @safe {
                 assert(a.spawns[i].kind != CreepKind.brute);
         }
         assert(spent <= waveBudget(wave));
-        assert(bosses == (wave % bossEvery == 0 ? 1 : 0));
+        assert(bosses == (wave % defaultCatalog.econ.bossEvery == 0 ? 1 : 0));
     }
-    buildWave(5, 8, b);
-    buildWave(5, 7, a);
+    buildWave(defaultCatalog, 5, 8, b);
+    buildWave(defaultCatalog, 5, 7, a);
     bool differs = a.count != b.count;
     foreach (i; 0 .. a.count < b.count ? a.count : b.count)
         differs |= a.spawns[i] != b.spawns[i];

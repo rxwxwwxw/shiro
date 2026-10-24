@@ -5,11 +5,14 @@ module tests.test_dialogue;
 import core.file;
 import core.result : EngineError;
 import core.stdc.stdio : printf;
+import story.catalog_load;
 import story.compile;
 import story.program;
 import story.state;
 import story.td_link;
 import story.vm;
+import td.catalog;
+import td.defs;
 import tests.harness : Report;
 
 enum string storyPath = "assets/story/main.story";
@@ -98,7 +101,41 @@ void run(ref Report rep) @nogc nothrow @trusted {
         hashes[pass] = st.hash();
     }
     rep.check(hashes[0] == hashes[1], "story state hash is deterministic");
+    checkRules(db, st, rep);
     printf("  story: %d speakers, %d labels, %d triggers, %d instructions, %d variables\n",
             cast(int)db.speakers.length, cast(int)db.labelNames.length,
             cast(int)db.triggers.length, cast(int)db.code.length, st.length);
+}
+
+/// The rules in assets/story/rules/*.story are the shipped rules: the catalog loaded from them is
+/// the D default, number for number and name for name.
+private void checkRules(ref const StoryProgram db, ref StoryState st, ref Report rep) @nogc nothrow @trusted {
+    static Catalog cat;
+    LoadError err;
+    st.reset(1);
+    initialize(db, st);
+    immutable ok = loadCatalog(st, cat, err);
+    if (!ok)
+        printf("  rules: %.*s\n", cast(int)err.text.length, err.text.ptr);
+    rep.check(ok, "story rules load into a catalog");
+    if (!ok)
+        return;
+    bool same = cat.numTowers == defaultCatalog.numTowers && cat.numCreeps == defaultCatalog.numCreeps;
+    foreach (k; 0 .. cat.numTowers)
+        foreach (s; 0 .. numStages) {
+            const a = &cat.towers[k].stages[s], b = &defaultCatalog.towers[k].stages[s];
+            if (*a != *b) {
+                printf("  rules: %.*s stage %d differs (%.*s / %.*s)\n",
+                        cast(int)cat.towers[k].id.length, cat.towers[k].id.ptr, cast(int)s,
+                        cast(int)a.name.length, a.name.ptr, cast(int)b.name.length, b.name.ptr);
+                same = false;
+            }
+        }
+    foreach (k; 0 .. cat.numCreeps)
+        if (cat.creeps[k] != defaultCatalog.creeps[k]) {
+            printf("  rules: creep %.*s differs\n", cast(int)cat.creeps[k].id.length, cat.creeps[k].id.ptr);
+            same = false;
+        }
+    same &= cat.econ == defaultCatalog.econ;
+    rep.check(same && cat.hash() == defaultCatalog.hash(), "story rules equal the built-in tables");
 }

@@ -52,9 +52,9 @@ RunModifiers fromStory(ref const StoryState st) @nogc nothrow @safe {
     RunModifiers m;
     m.bonusGold = st.named(varBonusGold);
     if (!st.named(varUnlockTesla))
-        m.lockedKinds |= 1 << TowerKind.tesla;
+        m.lockedKinds |= cast(ushort)(1 << TowerKind.tesla);
     if (!st.named(varUnlockFlame))
-        m.lockedKinds |= 1 << TowerKind.flame;
+        m.lockedKinds |= cast(ushort)(1 << TowerKind.flame);
     immutable hp = 100 + st.named(varHpPct);
     m.hpPct = hp < 50 ? 50 : (hp > 200 ? 200 : hp);
     return m;

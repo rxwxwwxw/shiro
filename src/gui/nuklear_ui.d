@@ -86,12 +86,12 @@ private immutable char*[12] errorText = [
 private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
 
 private void statsLine(nk_context* ctx, ref const Game g, ref const Tower t) @nogc nothrow @trusted {
-    const st = &towerStats(t.kind, t.stage);
-    if (t.kind == TowerKind.mine) {
+    const st = &g.catalog.tower(t.kind, t.stage);
+    if (!g.catalog.fights(t.kind)) {
         labelf(ctx, "Income +%d gold per wave", st.income);
         return;
     }
-    immutable dmg = st.damage * (t.ley ? 100 + leyDamagePct : 100) / 100;
+    immutable dmg = st.damage * (t.ley ? 100 + g.catalog.econ.leyDamagePct : 100) / 100;
     labelf(ctx, "Damage %d, range %.1f, %.1f/s", dmg, g.rangeOf(t) / cast(float)cellUnits,
             cast(float)ticksPerSecond / st.cooldown);
     labelf(ctx, "Kills %d, damage dealt %lld", t.kills, t.dealt);
@@ -159,7 +159,7 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
     nk_layout_row_dynamic(ctx, 18, 1);
     nk_label(ctx, "Build (1-6, right click cancels)", NK_TEXT_LEFT);
     nk_layout_row_dynamic(ctx, 24, 2);
-    foreach (k; 0 .. numTowerKinds)
+    foreach (k; 0 .. g.catalog.numTowers)
         buildButton(ctx, st, g, k);
     if (st.errorTimer > 0 && st.lastError > 0 && st.lastError < errorText.length) {
         nk_layout_row_dynamic(ctx, 16, 1);
@@ -172,7 +172,7 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
 /// Build button for tower kind `k`: disabled when locked (tooltip: where to unlock it) or too
 /// dear; otherwise the tooltip tells what the tower does.
 private void buildButton(nk_context* ctx, ref ViewerState st, ref const Game g, int k) @nogc nothrow @trusted {
-    const def = &towerStats(cast(TowerKind)k, Stage.lv1);
+    const def = &g.catalog.tower(cast(TowerKind)k, Stage.lv1);
     char[48] buf = void;
     snprintf(buf.ptr, buf.length, st.buildKind == k ? "> %d %.*s %d <" : "%d %.*s %d", k + 1,
             cast(int)def.name.length, def.name.ptr, def.cost);
@@ -214,14 +214,15 @@ private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq
         nk_layout_row_dynamic(ctx, 6, 1);
         return;
     }
-    const cur = &towerStats(t.kind, t.stage);
+    const cat = &g.catalog();
+    const cur = &cat.tower(t.kind, t.stage);
     nk_layout_row_dynamic(ctx, 18, 1);
     labelf(ctx, "%.*s   Lv %d/%d", cast(int)cur.name.length, cur.name.ptr, tierOf(t.stage), maxTier);
     nk_layout_row_dynamic(ctx, 16, 1);
     labelf(ctx, "%.*s", cast(int)cur.blurb.length, cur.blurb.ptr);
     nk_layout_row_dynamic(ctx, 16, 1);
     statsLine(ctx, g, *t);
-    if (t.kind != TowerKind.mine) {
+    if (cat.fights(t.kind)) {
         nk_layout_row_dynamic(ctx, 20, 4);
         nk_label(ctx, "Target", NK_TEXT_LEFT);
         foreach (m; 0 .. 3)
@@ -229,9 +230,9 @@ private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq
                 gq.push(GameCommand(CommandType.setTargeting, t.kind, cast(ubyte)m, t.col, t.row));
     }
     void upgradeButton(int branch, Stage next) {
-        const ns = &towerStats(t.kind, next);
+        const ns = &cat.tower(t.kind, next);
         char[64] buf = void;
-        snprintf(buf.ptr, buf.length, "%s %.*s (%d)", !isBranchPoint(t.kind, t.stage)
+        snprintf(buf.ptr, buf.length, "%s %.*s (%d)", !cat.isBranchPoint(t.kind, t.stage)
                 ? "Upgrade U:".ptr : (branch == 0 ? "Q:".ptr : "E:".ptr), cast(int)ns.name.length, ns.name.ptr, ns.cost);
         immutable poor = g.gold < ns.cost;
         if (poor)
@@ -243,16 +244,16 @@ private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq
     }
 
     Stage next;
-    if (nextStage(t.kind, t.stage, 0, next)) {
-        if (!isBranchPoint(t.kind, t.stage)) {
+    if (cat.nextStage(t.kind, t.stage, 0, next)) {
+        if (!cat.isBranchPoint(t.kind, t.stage)) {
             nk_layout_row_dynamic(ctx, 24, 1);
             upgradeButton(0, next);
         } else {
             foreach (b; 0 .. 2) {
-                nextStage(t.kind, t.stage, b, next);
+                cat.nextStage(t.kind, t.stage, b, next);
                 nk_layout_row_dynamic(ctx, 24, 1);
                 upgradeButton(b, next);
-                const ns = &towerStats(t.kind, next);
+                const ns = &cat.tower(t.kind, next);
                 nk_layout_row_dynamic(ctx, 14, 1);
                 labelf(ctx, "   %.*s", cast(int)ns.blurb.length, ns.blurb.ptr);
             }
@@ -260,7 +261,7 @@ private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq
     }
     nk_layout_row_dynamic(ctx, 24, 1);
     char[40] sell = void;
-    snprintf(sell.ptr, sell.length, "Sell for %d (Del)", t.invested * sellPercent / 100);
+    snprintf(sell.ptr, sell.length, "Sell for %d (Del)", t.invested * cat.econ.sellPercent / 100);
     if (nk_button_label(ctx, sell.ptr))
         gq.push(GameCommand(CommandType.sell, t.kind, 0, t.col, t.row));
     nk_layout_row_dynamic(ctx, 6, 1);
@@ -591,8 +592,8 @@ void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref 
     // Build bar.
     immutable bw = viewW - 20 < 760 ? viewW - 20 : 760;
     if (!over && hudWindow(ctx, "hud_build", (viewW - bw) * 0.5f, viewH - 58, bw, 50)) {
-        nk_layout_row_dynamic(ctx, 32, numTowerKinds);
-        foreach (k; 0 .. numTowerKinds)
+        nk_layout_row_dynamic(ctx, 32, g.catalog.numTowers);
+        foreach (k; 0 .. g.catalog.numTowers)
             buildButton(ctx, st, g, k);
         nk_end(ctx);
     }

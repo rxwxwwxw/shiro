@@ -102,12 +102,12 @@ StoryLine:
     Unary       <- NegOp Sp Unary / Postfix
     Postfix     <- Primary (Index / Member)*
     Index       <- "[" Sp Expr Sp "]"
-    Member      <- "." Name
+    Member      <- "." KeyName
     NegOp       <~ "-"
     Primary     <- Number / String / Symbol / ListLit / MapLit / Paren / CallExpr / Literal / Path
     ListLit     <- "[" Sp (Expr (Sp "," Sp Expr)* (Sp ",")?)? Sp "]"
     MapLit      <- "{" Sp (Pair (Sp "," Sp Pair)* (Sp ",")?)? Sp "}"
-    Pair        <- (String / Name) Sp ":" Sp Expr
+    Pair        <- (String / KeyName) Sp ":" Sp Expr
     Paren       <- "(" Sp Expr Sp ")"
     CallExpr    <- Name Sp "(" Sp (Expr (Sp "," Sp Expr)*)? Sp ")"
     Literal     <~ ("true" / "false" / "nil") !NameChar
@@ -115,6 +115,7 @@ StoryLine:
     Path        <- Name ("." Name)*
 
     Name        <~ !Keyword [a-zA-Z_] NameChar*
+    KeyName     <~ [a-zA-Z_] NameChar*
     Keyword     <- ("import" / "type" / "character" / "place" / "var" / "data" / "def" / "on" / "label"
                  / "if" / "elif"
                  / "else" / "set" / "clear" / "event" / "show" / "hide" / "scene" / "play" / "stop"
@@ -219,6 +220,7 @@ version (unittest) {
     assert(parsesAs("return base * 2", "Return"));
     assert(parsesAs("if who == :elder:", "If"));
     assert(parsesAs("x = grow(t, 2).cost", "Assign"));
+    assert(parsesAs("x = {type: :magic, in: 1}.type", "Assign"));
 }
 
 @nogc nothrow unittest {

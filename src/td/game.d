@@ -8,6 +8,7 @@ module td.game;
 import core.stdc.stdlib : calloc, free;
 import core.stdc.string : memset;
 import td.board;
+import td.catalog;
 import td.defs;
 import td.spatial;
 import td.waves;
@@ -184,7 +185,7 @@ struct RunModifiers {
     /// Added to the starting gold (may be negative).
     int bonusGold;
     /// Bit per TowerKind that may not be built.
-    ubyte lockedKinds;
+    ushort lockedKinds;
     /// Creep hit points in percent of normal.
     int hpPct = 100;
 }
@@ -205,6 +206,9 @@ struct Game {
     private int waveSpawned, waveTick;
     private uint tick_, seed_, serials;
     private RunModifiers mods_;
+    /// The rules (tower and creep kinds, economy); the shipped defaults unless `start` got others.
+    private const(Catalog)* cat_ = &defaultCatalog;
+    private ulong catHash_;
     int gold, lives;
     /// Waves started so far.
     int waveNo;
@@ -249,9 +253,12 @@ struct Game {
         numEvents_ = numTowers_ = 0;
     }
 
-    /// New game on a generated map, adjusted by `mods`.
-    void start(ref const MapSession s, uint seed, RunModifiers mods = RunModifiers.init) @nogc nothrow @trusted {
+    /// New game on a generated map, adjusted by `mods`, under the rules in `cat` (which must
+    /// outlive the game).
+    void start(ref const MapSession s, uint seed, RunModifiers mods = RunModifiers.init,
+            const(Catalog)* cat = &defaultCatalog) @nogc nothrow @trusted {
         mods_ = mods;
+        cat_ = cat;
         board_.load(s, seed);
         begin(seed);
         if (board_.plan.enabled) {
@@ -278,19 +285,20 @@ struct Game {
         cellWorld(board_.rect.cols, board_.rect.rows, wx, wy);
         grid.setup(wx + cellUnits, wy + cellUnits, maxCreeps);
         seed_ = seed;
+        catHash_ = cat_.hash();
         tick_ = serials = 0;
         numEvents_ = numTowers_ = creepHint = projHint = 0;
         waveSpawned = waveTick = 0;
         wave_.count = 0;
-        gold = startGold + mods_.bonusGold;
+        gold = cat_.econ.startGold + mods_.bonusGold;
         if (gold < 0)
             gold = 0;
-        lives = startLives;
+        lives = cat_.econ.startLives;
         waveNo = 0;
-        waveLimit = totalWaves;
+        waveLimit = cat_.econ.totalWaves;
         wavesPerStage = 0;
         status = GameStatus.waiting;
-        countdown = firstWaveDelay;
+        countdown = cat_.econ.firstWaveDelay;
         creepsAlive = killed = leaked = 0;
         droppedEvents = 0;
     }
@@ -312,6 +320,17 @@ struct Game {
     /// Test hook: modifiers for the next `begin` (`start` takes them as an argument).
     void setModifiersForTest(RunModifiers m) @nogc nothrow pure @safe {
         mods_ = m;
+    }
+
+    /// The rules this game runs on.
+    ref const(Catalog) catalog() const return @nogc nothrow pure @safe {
+        return *cat_;
+    }
+
+    /// Test hook: rules for the next `begin` (`start` takes them as an argument); `cat` must
+    /// outlive the game.
+    void setCatalogForTest(const(Catalog)* cat) @nogc nothrow pure @safe {
+        cat_ = cat;
     }
 
     /// Test hook: the board to fill before `begin`.
@@ -363,7 +382,7 @@ struct Game {
 
     /// Effective range of a tower, high ground included.
     int rangeOf(ref const Tower t) const @nogc nothrow pure @safe {
-        return towerStats(t.kind, t.stage).range * (100 + t.rangePct) / 100;
+        return cat_.tower(t.kind, t.stage).range * (100 + t.rangePct) / 100;
     }
 
     /// Why `kind` could not be placed on (col, row) right now (`none` if it can).
@@ -372,6 +391,8 @@ struct Game {
             return CommandError.wrongPhase;
         if (!board_.inside(col, row))
             return CommandError.outside;
+        if (kind >= cat_.numTowers)
+            return CommandError.locked;
         immutable i = cast(size_t)row * board_.rect.cols + col;
         if (!board_.visible(i))
             return CommandError.hidden;
@@ -379,11 +400,11 @@ struct Game {
             return CommandError.notBuildable;
         if (towerAt_[i] != 0)
             return CommandError.occupied;
-        if ((board_.specialAt(i) == SpecialKind.goldVein) != (kind == TowerKind.mine))
+        if ((board_.specialAt(i) == SpecialKind.goldVein) != cat_.towers[kind].vein)
             return CommandError.wrongTile;
         if (mods_.lockedKinds & (1 << kind))
             return CommandError.locked;
-        if (gold < towerStats(kind, Stage.lv1).cost)
+        if (gold < cat_.tower(kind, Stage.lv1).cost)
             return CommandError.noGold;
         return CommandError.none;
     }
@@ -398,6 +419,7 @@ struct Game {
             }
         }
 
+        put(catHash_);
         put(tick_);
         put(gold);
         put(lives);
@@ -448,9 +470,9 @@ struct Game {
                 if (t is null)
                     return CommandError.noTower;
                 Stage next;
-                if (!nextStage(t.kind, t.stage, cmd.arg, next))
+                if (!cat_.nextStage(t.kind, t.stage, cmd.arg, next))
                     return CommandError.maxed;
-                immutable cost = towerStats(t.kind, next).cost;
+                immutable cost = cat_.tower(t.kind, next).cost;
                 if (gold < cost)
                     return CommandError.noGold;
                 gold -= cost;
@@ -463,7 +485,7 @@ struct Game {
                 auto t = mutableTower(cmd.col, cmd.row);
                 if (t is null)
                     return CommandError.noTower;
-                immutable refund = t.invested * sellPercent / 100;
+                immutable refund = t.invested * cat_.econ.sellPercent / 100;
                 gold += refund;
                 towerAt_[t.cell] = 0;
                 t.alive = false;
@@ -513,8 +535,8 @@ struct Game {
         t.kind = kind;
         t.alive = true;
         t.ley = board_.specialAt(i) == SpecialKind.leyStone;
-        t.rangePct = board_.highGroundPct(i);
-        t.invested = towerStats(kind, Stage.lv1).cost;
+        t.rangePct = board_.highGroundPct(i, cat_.econ.highGroundPctPerLevel, cat_.econ.highGroundCapPct);
+        t.invested = cat_.tower(kind, Stage.lv1).cost;
         // A new tower takes a moment to man.
         t.cooldown = ticksPerSecond / 2;
         gold -= t.invested;
@@ -561,7 +583,7 @@ struct Game {
 
     private void startWave() @nogc nothrow @trusted {
         waveNo++;
-        buildWave(waveNo, seed_, wave_);
+        buildWave(*cat_, waveNo, seed_, wave_);
         waveSpawned = 0;
         waveTick = 0;
         status = GameStatus.wave;
@@ -569,13 +591,15 @@ struct Game {
     }
 
     private void clearWave() @nogc nothrow @trusted {
-        int pay = waveClearBonus(waveNo);
-        foreach (i; 0 .. numTowers_)
-            if (towers_[i].alive && towers_[i].kind == TowerKind.mine) {
-                pay += towerStats(TowerKind.mine, towers_[i].stage).income;
-                emit(SimEvent(EventKind.waveClear, TowerKind.mine, towers_[i].stage, towers_[i].x,
-                        towers_[i].y, 0, 0, towerStats(TowerKind.mine, towers_[i].stage).income));
+        int pay = cat_.waveClearBonus(waveNo);
+        foreach (i; 0 .. numTowers_) {
+            const t = &towers_[i];
+            if (t.alive && !cat_.fights(t.kind)) {
+                immutable income = cat_.tower(t.kind, t.stage).income;
+                pay += income;
+                emit(SimEvent(EventKind.waveClear, t.kind, t.stage, t.x, t.y, 0, 0, income));
             }
+        }
         gold += pay;
         emit(SimEvent(EventKind.waveClear, 0, 0, 0, 0, 0, 0, pay));
         // A stage's last wave uncovers the next stage (no creeps are left on the board).
@@ -586,7 +610,7 @@ struct Game {
             emit(SimEvent(EventKind.victory));
         } else {
             status = GameStatus.waiting;
-            countdown = waveBreak;
+            countdown = cat_.econ.waveBreak;
         }
     }
 
@@ -626,9 +650,9 @@ struct Game {
             c.kind = kind;
             c.alive = true;
             c.serial = ++serials;
-            immutable hp = cast(long)scaledHp(kind, waveNo > 0 ? waveNo : 1) * mods_.hpPct / 100;
+            immutable hp = cast(long)cat_.scaledHp(kind, waveNo > 0 ? waveNo : 1) * mods_.hpPct / 100;
             c.hp = c.maxHp = hp < 1 ? 1 : cast(int)hp;
-            c.armor = cast(ubyte)creepTable[kind].armor;
+            c.armor = cast(ubyte)cat_.creep(kind).armor;
             c.cell = cell;
             c.next = chooseNext(cell, c.serial);
             placeCreep(*c);
@@ -680,7 +704,7 @@ struct Game {
             c.py = c.y;
             if (c.stunTicks > 0)
                 continue;
-            int speed = creepTable[c.kind].speed;
+            int speed = cat_.creep(c.kind).speed;
             if (c.slowTicks > 0)
                 speed = speed * (100 - c.slowPct) / 100;
             c.progress += speed;
@@ -701,7 +725,7 @@ struct Game {
     }
 
     private void leak(ref Creep c) @nogc nothrow @trusted {
-        immutable cost = creepTable[c.kind].leak;
+        immutable cost = cat_.creep(c.kind).leak;
         int x, y;
         cellWorld(board_.rect.cellAt(c.cell), x, y);
         c.alive = false;
@@ -752,7 +776,7 @@ struct Game {
         c.alive = false;
         creepsAlive--;
         killed++;
-        immutable bounty = creepTable[c.kind].bounty;
+        immutable bounty = cat_.creep(c.kind).bounty;
         gold += bounty;
         if (ti >= 0)
             towers_[ti].kills++;
@@ -760,7 +784,7 @@ struct Game {
     }
 
     private void slow(ref Creep c, int pct, int ticks) @nogc nothrow pure @safe {
-        immutable resist = creepTable[c.kind].slowResist;
+        immutable resist = cat_.creep(c.kind).slowResist;
         immutable eff = pct * (100 - resist) / 100;
         if (eff >= c.slowPct) {
             c.slowPct = cast(ubyte)eff;
@@ -770,7 +794,7 @@ struct Game {
     }
 
     private void stun(ref Creep c, int ticks) @nogc nothrow pure @safe {
-        immutable eff = ticks * (100 - creepTable[c.kind].slowResist) / 100;
+        immutable eff = ticks * (100 - cat_.creep(c.kind).slowResist) / 100;
         if (eff > c.stunTicks)
             c.stunTicks = cast(ushort)eff;
     }
@@ -848,18 +872,18 @@ struct Game {
     private void updateTowers() @nogc nothrow @trusted {
         foreach (ti; 0 .. numTowers_) {
             auto t = &towers_[ti];
-            if (!t.alive || t.kind == TowerKind.mine)
+            if (!t.alive || !cat_.fights(t.kind))
                 continue;
             if (t.cooldown > 0) {
                 t.cooldown--;
                 continue;
             }
-            const st = &towerStats(t.kind, t.stage);
+            const st = &cat_.tower(t.kind, t.stage);
             immutable range = rangeOf(*t);
             immutable n = grid.query(creeps(), t.x, t.y, range, scratch[0 .. maxCreeps]);
             if (n == 0)
                 continue;
-            immutable dmg = st.damage * (t.ley ? 100 + leyDamagePct : 100) / 100;
+            immutable dmg = st.damage * (t.ley ? 100 + cat_.econ.leyDamagePct : 100) / 100;
             t.cooldown = st.cooldown;
             t.lastFired = tick_;
             t.shots++;
@@ -878,8 +902,8 @@ struct Game {
             t.aimX = target.x;
             t.aimY = target.y;
             emit(SimEvent(EventKind.fired, t.kind, t.stage, t.x, t.y, target.x, target.y));
-            final switch (t.kind) {
-            case TowerKind.arrow: {
+            final switch (cat_.behavior(t.kind)) {
+            case Behavior.projectile: {
                     size_t shot = 0;
                     foreach (v; 0 .. st.targets) {
                         immutable k = pick(t.targeting, n, shot, t.x, t.y);
@@ -891,20 +915,20 @@ struct Game {
                     }
                     break;
                 }
-            case TowerKind.cannon:
+            case Behavior.shell:
                 // Shells land where the target stood when they were fired.
                 launch(ProjKind.shell, *t, ti, -1, target.x, target.y, dmg, st.projSpeed);
                 break;
-            case TowerKind.frost:
+            case Behavior.shard:
                 launch(ProjKind.shard, *t, ti, scratch[first], target.x, target.y, dmg, st.projSpeed);
                 break;
-            case TowerKind.tesla:
+            case Behavior.chain:
                 lightning(*t, ti, *st, scratch[first], dmg);
                 break;
-            case TowerKind.flame:
+            case Behavior.cone:
                 flame(*t, ti, *st, n, target.x, target.y, dmg);
                 break;
-            case TowerKind.mine:
+            case Behavior.income:
                 break;
             }
         }
@@ -948,7 +972,7 @@ struct Game {
             // Inside the cone: angle to the aim line under acos(coneCos / 100).
             if (dd > 0 && (dot <= 0 || dot * dot * 10_000 < cos2 * dd * (ex * ex + ey * ey)))
                 continue;
-            burn(*c, st.burnDmg * (t.ley ? 100 + leyDamagePct : 100) / 100, st.burnTicks);
+            burn(*c, st.burnDmg * (t.ley ? 100 + cat_.econ.leyDamagePct : 100) / 100, st.burnTicks);
             hurt(scratch[k], dmg, st.type, 0, ti);
         }
         if (st.patchTicks > 0 && t.shots % 4 == 1)
@@ -1017,7 +1041,7 @@ struct Game {
 
     private void impact(ref const Projectile p) @nogc nothrow @trusted {
         immutable ti = p.tower >= 0 && p.tower < numTowers_ && towers_[p.tower].alive ? p.tower : -1;
-        const st = &towerStats(p.tkind, p.stage);
+        const st = &cat_.tower(p.tkind, p.stage);
         final switch (p.kind) {
         case ProjKind.arrow:
             if (p.target >= 0) {
@@ -1161,7 +1185,7 @@ version (unittest) {
     // Run modifiers: bonus gold, locked kinds and tougher creeps.
     Game g;
     straightBoard(g);
-    g.setModifiersForTest(RunModifiers(40, cast(ubyte)(1 << TowerKind.flame), 150));
+    g.setModifiersForTest(RunModifiers(40, cast(ushort)(1 << TowerKind.flame), 150));
     g.begin(7);
     assert(g.gold == startGold + 40 && g.modifiers.hpPct == 150);
     assert(g.canPlace(TowerKind.flame, 5, 2) == CommandError.locked);

@@ -6,6 +6,7 @@ module td.bot;
 
 import core.stdc.stdlib : calloc, malloc, free;
 import td.board;
+import td.catalog;
 import td.defs;
 import td.game;
 import wfc.hex;
@@ -23,7 +24,7 @@ struct Bot {
     private ushort* laneAt;
     private int numLanes;
     private int numSpots;
-    private int[numTowerKinds] built;
+    private int[maxTowerKinds] built;
     private int decisions;
     private int rankedStage;
     /// Ticks between decisions.
@@ -126,18 +127,29 @@ struct Bot {
         if (g.board.stage != rankedStage)
             rank(g);
         decisions++;
+        const cat = &g.catalog();
         // Mines on free veins pay for themselves within a few waves.
+        int mine = -1;
+        foreach (k; 0 .. cat.numTowers)
+            if (cat.towers[k].vein && !cat.fights(cast(TowerKind)k)) {
+                mine = k;
+                break;
+            }
         foreach (k; 0 .. numSpots) {
             const s = &spots[k];
-            if (g.board.special(s.col, s.row) != SpecialKind.goldVein || g.towerAt(s.col, s.row) !is null)
+            if (mine < 0 || g.board.special(s.col, s.row) != SpecialKind.goldVein || g.towerAt(s.col, s.row) !is null)
                 continue;
-            if (g.gold >= towerStats(TowerKind.mine, Stage.lv1).cost + 60 && g.waveNo >= 2)
-                if (g.apply(GameCommand(CommandType.place, TowerKind.mine, 0, s.col, s.row)) == CommandError.none)
+            immutable mk = cast(TowerKind)mine;
+            if (g.gold >= cat.tower(mk, Stage.lv1).cost + 60 && g.waveNo >= 2)
+                if (g.apply(GameCommand(CommandType.place, mk, 0, s.col, s.row)) == CommandError.none)
                     return;
             break;
         }
         // Alternate between building and upgrading once a few towers stand.
-        immutable towers = built[0] + built[1] + built[2] + built[3] + built[4];
+        int towers = 0;
+        foreach (k; 0 .. cat.numTowers)
+            if (cat.fights(cast(TowerKind)k))
+                towers += built[k];
         if (towers >= 4 && decisions % 3 == 0 && upgrade(g))
             return;
         static immutable TowerKind[8] order = [
@@ -145,7 +157,7 @@ struct Bot {
             TowerKind.flame, TowerKind.cannon, TowerKind.tesla
         ];
         immutable kind = order[towers % order.length];
-        if (g.gold < towerStats(kind, Stage.lv1).cost)
+        if (kind >= cat.numTowers || g.gold < cat.tower(kind, Stage.lv1).cost)
             return;
         // The least defended lane first, then anywhere.
         immutable lane = weakestLane(g);
@@ -181,7 +193,7 @@ struct Bot {
     private int weakestLane(ref const Game g) const @nogc nothrow @trusted {
         int[16] cover;
         foreach (ref t; g.towers) {
-            if (!t.alive || t.kind == TowerKind.mine)
+            if (!t.alive || !g.catalog.fights(t.kind))
                 continue;
             immutable m = lanesNear(g.board, g.board.rect.cellAt(t.cell));
             foreach (l; 0 .. numLanes)
@@ -202,7 +214,7 @@ struct Bot {
                 continue;
             Stage next;
             immutable branch = cast(int)(mix(t.cell, 0x8A4u) & 1);
-            if (!nextStage(t.kind, t.stage, branch, next) || g.gold < towerStats(t.kind, next).cost)
+            if (!g.catalog.nextStage(t.kind, t.stage, branch, next) || g.gold < g.catalog.tower(t.kind, next).cost)
                 continue;
             if (tierOf(t.stage) < bestStage) {
                 bestStage = tierOf(t.stage);

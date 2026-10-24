@@ -233,7 +233,7 @@ enum Builtin : ubyte {
 }
 
 /// Most values one expression keeps on the stack (the compiler rejects deeper expressions).
-enum int maxExprStack = 32;
+enum int maxExprStack = 128;
 
 enum Severity : ubyte {
     error,

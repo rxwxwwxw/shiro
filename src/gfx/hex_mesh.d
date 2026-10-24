@@ -1138,31 +1138,33 @@ struct MapMesh {
         if (game_ is null || !game_.active)
             return false;
         if (const t = game_.towerAt(col, row)) {
+            // Modded kinds borrow the art of a built-in kind.
+            immutable look = game_.catalog.towers[t.kind].look;
             immutable angle0 = dirAngle[(col * 7 + row * 3) % 6];
             // Own models carry their colors and a look per stage (the nearest lower stage on the
             // same path stands in for a missing one); size and a light tint wash add to it.
             immutable br = branchOf(t.stage) < 0 ? 0 : branchOf(t.stage);
             int tier = tierOf(t.stage);
-            while (tier > 1 && !ts.td[t.kind][stageAt(br, tier)].valid)
+            while (tier > 1 && !ts.td[look][stageAt(br, tier)].valid)
                 --tier;
-            ref const MeshRef own = ts.td[t.kind][stageAt(br, tier)];
+            ref const MeshRef own = ts.td[look][stageAt(br, tier)];
             if (own.valid) {
                 immutable sc = 0.9f + 0.02f * (tierOf(t.stage) - 1);
-                immutable k = towerTint(t.kind, t.stage);
+                immutable k = towerTint(look, t.stage);
                 immutable wash = Rgb(0.8f + 0.2f * k.r, 0.8f + 0.2f * k.g, 0.8f + 0.2f * k.b);
                 addShadow(own, cx, cz, baseY, sc);
                 addModel(own, cx, baseY, cz, angle0, sc, 1, wash, lvl);
                 return true;
             }
-            ref const MeshRef m = towerMesh(ts, t.kind);
+            ref const MeshRef m = towerMesh(ts, look);
             immutable sc = towerScale(t.stage);
-            immutable tint = towerTint(t.kind, t.stage);
+            immutable tint = towerTint(look, t.stage);
             immutable angle = dirAngle[(col * 7 + row * 3) % 6];
             addShadow(m, cx, cz, baseY, sc);
             addModel(m, cx, baseY, cz, angle, sc, 1, tint, lvl);
-            if (t.kind == TowerKind.arrow && t.stage != Stage.lv1)
+            if (look == TowerKind.arrow && t.stage != Stage.lv1)
                 addModel(ts.towerTop, cx, baseY, cz, angle, sc, 1, tint, lvl);
-            if (t.kind == TowerKind.tesla && branchOf(t.stage) >= 0)
+            if (look == TowerKind.tesla && branchOf(t.stage) >= 0)
                 addModel(ts.towerTop, cx, baseY + 0.25f, cz, angle, sc * 0.8f, 1, tint, lvl);
             return true;
         }
@@ -1186,10 +1188,11 @@ struct MapMesh {
         if (game_ is null || !game_.active)
             return false;
         if (const t = game_.towerAt(col, row)) {
+            immutable look = game_.catalog.towers[t.kind].look;
             immutable sc = towerScale(t.stage);
-            immutable tint = towerTint(t.kind, t.stage);
-            immutable roof = flatRoof[t.kind];
-            addHouse(cx, cz, hc, 0.30f * sc, 0.30f * sc, (t.kind == TowerKind.mine ? 1.0f : 2.2f) * sc,
+            immutable tint = towerTint(look, t.stage);
+            immutable roof = flatRoof[look];
+            addHouse(cx, cz, hc, 0.30f * sc, 0.30f * sc, (look == TowerKind.mine ? 1.0f : 2.2f) * sc,
                     0.9f * sc, Rgb(0.80f * tint.r, 0.78f * tint.g, 0.74f * tint.b), roof);
             return true;
         }

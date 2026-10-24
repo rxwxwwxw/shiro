@@ -10,6 +10,9 @@ import "guard.story"
 import "itzel.story"
 import "smith.story"
 import "child.story"
+import "rules/towers.story"
+import "rules/creeps.story"
+import "rules/economy.story"
 
 # Starting money for the market and the shops (see places.story).
 var coins = 40

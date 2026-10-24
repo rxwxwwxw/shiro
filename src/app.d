@@ -26,13 +26,15 @@ import gui.interior_ui;
 import gui.menus : drawMenus;
 import village.interior : Interiors;
 import gui.nuklear_ui;
+import story.catalog_load : loadCatalog, LoadError;
 import story.program;
 import story.vm;
 import story.compile;
 import story.state;
 import story.td_link;
 import td.bot;
-import td.defs : cellUnits, halfHex, isBranchPoint, rowUnits, ticksPerSecond, TowerKind;
+import td.catalog : Catalog;
+import td.defs : cellUnits, halfHex, rowUnits, ticksPerSecond, TowerKind;
 import td.game;
 import village.plan;
 import village.walk;
@@ -90,6 +92,8 @@ private struct Viewer {
     /// The village story: file, compiled dialogue, flags, and the hub's map and simulation.
     FileBytes storyFile;
     StoryProgram dialogueDb;
+    /// Tower defense rules: from the story's `data` tables when it has them, else the defaults.
+    Catalog rules;
     StoryState storyState;
     VillagePlan plan;
     WalkGrid walk;
@@ -211,7 +215,7 @@ private struct Viewer {
     void startGame() @nogc nothrow @trusted {
         simAcc = 0;
         if (state.params.routes.enabled && session.network.allocated) {
-            game.start(*session, state.params.seed, state.story ? runMods : RunModifiers.init);
+            game.start(*session, state.params.seed, state.story ? runMods : RunModifiers.init, &rules);
             bot.setup(game);
         } else
             game.stop();
@@ -220,7 +224,7 @@ private struct Viewer {
 
     /// Reacts to what the last tick or command did: rebuilds the cells whose tower changed.
     void onSimEvents() @nogc nothrow @trusted {
-        fx.onEvents(game.events);
+        fx.onEvents(game.events, game.catalog);
         foreach (ref e; game.events) {
             if (e.kind == EventKind.reveal) {
                 mesh.fogChanged();
@@ -285,7 +289,7 @@ private struct Viewer {
         if (t is null)
             return;
         // U climbs a level; Q / E pick the specialization at the branch point.
-        if ((branch < 0) == isBranchPoint(t.kind, t.stage))
+        if ((branch < 0) == game.catalog.isBranchPoint(t.kind, t.stage))
             return;
         gameQueue.push(GameCommand(CommandType.upgrade, t.kind, cast(ubyte)(branch < 0 ? 0 : branch), t.col, t.row));
     }
@@ -464,6 +468,10 @@ private struct Viewer {
         initialize(dialogueDb, storyState);
         if (interiors.load(dialogueDb, storyState) < 0)
             fprintf(stderr, "story: a place is not a village landmark\n");
+        LoadError rulesErr;
+        if (!loadCatalog(storyState, rules, rulesErr))
+            fprintf(stderr, "story rules: %.*s; playing the built-in rules\n",
+                    cast(int)rulesErr.text.length, rulesErr.text.ptr);
         return true;
     }
 
@@ -796,7 +804,7 @@ private struct Viewer {
                 break;
             case SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6:
                 immutable k = cast(int)(e.key.key - SDLK_1);
-                if (game.active && (game.modifiers.lockedKinds & (1 << k)))
+                if (game.active && (k >= game.catalog.numTowers || (game.modifiers.lockedKinds & (1 << k))))
                     break;
                 state.buildKind = state.buildKind == k ? -1 : k;
                 break;
@@ -1030,6 +1038,7 @@ private int run(ref const ViewerConfig cfg) @nogc nothrow @trusted {
     }
 
     Viewer v;
+    v.rules.setDefault();
     if (ren.gpu) {
         if (v.renderer.gpu.open(ren.handle))
             printf("GPU renderer: %s\n", SDL_GetGPUDeviceDriver(SDL_GetGPURendererDevice(ren.handle)));

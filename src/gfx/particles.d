@@ -12,6 +12,7 @@ import gfx.camera;
 import gfx.hex_mesh : MapMesh;
 import gfx.iso : IsoPoint, squash;
 import gfx.td_overlay : isoPerX, isoPerY, towerTop, worldToScreen;
+import td.catalog : Catalog;
 import td.defs;
 import td.game;
 
@@ -195,26 +196,30 @@ struct Particles {
             }
     }
 
-    /// Effects for one tick's events.
-    void onEvents(const(SimEvent)[] events) @nogc nothrow @trusted {
+    /// Effects for one tick's events (kinds are drawn with the looks `cat` gives them).
+    void onEvents(const(SimEvent)[] events, ref const Catalog cat) @nogc nothrow @trusted {
         foreach (ref e; events)
-            onEvent(e);
+            onEvent(e, cat);
     }
 
-    private void onEvent(ref const SimEvent e) @nogc nothrow @trusted {
+    private void onEvent(ref const SimEvent e, ref const Catalog cat) @nogc nothrow @trusted {
         enum SDL_FColor clear = SDL_FColor(0, 0, 0, 0);
         immutable float ex = e.x, ey = e.y;
+        TowerKind towerLook() {
+            return e.a < cat.numTowers ? cat.towers[e.a].look : TowerKind.arrow;
+        }
+
         final switch (e.kind) {
         case EventKind.fired:
-            if (e.a == TowerKind.cannon) {
+            if (towerLook() == TowerKind.cannon) {
                 burst(ex, ey, towerTop, 6, 500, 1.5f, 0.18f, 0.35f, 0.7f, SDL_FColor(1, 0.85f,
                         0.4f, 1), SDL_FColor(1, 0.3f, 0, 0), true);
                 burst(ex, ey, towerTop, 5, 250, 1.2f, 0.9f, 0.3f, 0.8f, SDL_FColor(0.5f, 0.5f,
                         0.5f, 0.5f), SDL_FColor(0.4f, 0.4f, 0.4f, 0), false, 0, 2);
-            } else if (e.a == TowerKind.frost)
+            } else if (towerLook() == TowerKind.frost)
                 burst(ex, ey, towerTop, 5, 300, 0.8f, 0.3f, 0.18f, 0.05f, SDL_FColor(0.8f, 0.95f,
                         1, 1), SDL_FColor(0.4f, 0.7f, 1, 0), true);
-            else if (e.a == TowerKind.arrow)
+            else if (towerLook() == TowerKind.arrow)
                 burst(ex, ey, towerTop, 2, 150, 0.4f, 0.2f, 0.12f, 0.02f, SDL_FColor(1, 0.95f,
                         0.8f, 0.8f), clear, true);
             break;
@@ -248,7 +253,8 @@ struct Particles {
             break;
         case EventKind.death:
             SDL_FColor body;
-            final switch (cast(CreepKind)e.a) {
+            immutable creepLook = e.a < cat.numCreeps ? cat.creeps[e.a].look : CreepKind.grunt;
+            final switch (creepLook) {
             case CreepKind.grunt:
                 body = SDL_FColor(0.6f, 0.8f, 0.4f, 1);
                 break;
@@ -265,7 +271,7 @@ struct Particles {
                 body = SDL_FColor(0.95f, 0.3f, 0.3f, 1);
                 break;
             }
-            immutable big = e.a == CreepKind.boss ? 4 : 1;
+            immutable big = creepLook == CreepKind.boss ? 4 : 1;
             burst(ex, ey, 0.3f, 10 * big, 600, 2.5f, 0.6f, 0.16f, 0.04f, body, SDL_FColor(body.r,
                     body.g, body.b, 0), false, -9, 1);
             burst(ex, ey, 0.3f, 6 * big, 250, 1, 0.8f, 0.3f, 0.9f, SDL_FColor(0.9f, 0.9f, 0.85f,
@@ -304,7 +310,8 @@ struct Particles {
                     SDL_FColor(0.9f, 0.15f, 0, 0), true, -3);
             break;
         case EventKind.waveClear:
-            if (e.a == TowerKind.mine)
+            // Income buildings pay out (the wave's own bonus comes with x = 0).
+            if (e.x != 0 && towerLook() == TowerKind.mine)
                 burst(ex, ey, 0.8f, 14, 300, 4, 1.0f, 0.15f, 0.1f, SDL_FColor(1, 0.88f, 0.25f,
                         1), SDL_FColor(1, 0.7f, 0.1f, 0), true, -9);
             break;
