@@ -316,6 +316,21 @@ struct Particles {
                         1), SDL_FColor(1, 0.7f, 0.1f, 0), true, -9);
             break;
         case EventKind.waveStart:
+        case EventKind.towerHit:
+            // Splinters fly off the struck tower.
+            burst(ex, ey, towerTop * 0.6f, 6, 500,
+                    1.4f, 0.4f, 0.12f, 0.03f, SDL_FColor(0.75f, 0.6f, 0.45f, 1), SDL_FColor(0.4f,
+                        0.3f, 0.2f, 0), false, -9);
+            break;
+        case EventKind.towerDown:
+            burst(ex, ey, towerTop * 0.5f, 30, 600, 3, 1.2f, 0.4f, 0.2f,
+                    SDL_FColor(0.55f, 0.5f, 0.45f, 0.8f), SDL_FColor(0.3f, 0.3f, 0.3f, 0), false, -2, 2);
+            break;
+        case EventKind.crewInjured:
+            burst(ex, ey, towerTop, 10, 300, 1.5f, 0.8f, 0.15f, 0.05f,
+                    SDL_FColor(1, 0.25f, 0.2f, 1), SDL_FColor(0.8f, 0.1f, 0.1f, 0), true, -6);
+            break;
+        case EventKind.repaired:
         case EventKind.gameOver:
         case EventKind.victory:
         case EventKind.reveal:

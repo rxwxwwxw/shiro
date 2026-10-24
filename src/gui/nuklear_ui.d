@@ -78,11 +78,11 @@ private bool section(nk_context* ctx, const(char)* title, int id, bool open) @no
             ? nk_collapse_states.NK_MAXIMIZED : nk_collapse_states.NK_MINIMIZED, title, 0, id);
 }
 
-private immutable char*[12] errorText = [
+private immutable char*[13] errorText = [
     "", "Outside the map", "Can't build there", "Already a tower there",
-    "Mines go on gold veins only", "Not enough gold",
-    "No tower there", "Fully upgraded", "Not now", "Too many towers", "Still in the fog",
-    "Not unlocked yet"
+    "Mines go on gold veins only", "Not enough gold", "No tower there",
+    "Fully upgraded", "Not now", "Too many towers", "Still in the fog", "Not unlocked yet",
+    "Nothing to repair"
 ];
 
 private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
@@ -131,6 +131,9 @@ private void gamePanel(nk_context* ctx, ref ViewerState st, ref CommandQueue q, 
         break;
     case GameStatus.won:
         nk_label_colored(ctx, "Victory! All waves held", NK_TEXT_LEFT, nk_color(120, 230, 120, 255));
+        break;
+    case GameStatus.planning:
+        labelf(ctx, "Preparing the defenses (no attack today)");
         break;
     }
     if (st.story) {
@@ -203,6 +206,29 @@ private void buildButton(nk_context* ctx, ref ViewerState st, ref const Game g, 
         nk_widget_disable_end(ctx);
 }
 
+/// Who mans the selected tower and what they add; the button sends the next villager there
+/// (midweek only: crews take their posts before the battle).
+private void crewRow(nk_context* ctx, ref ViewerState st, ref GameQueue gq, ref const Game g, ref const Tower t) @nogc nothrow @trusted {
+    nk_layout_row_dynamic(ctx, 16, 1);
+    const who = st.crewName(t.crew);
+    labelf(ctx, "Crew: %.*s (dmg %+d%%, range %+d%%, reload %+d%%)", cast(int)who.length, who.ptr,
+            t.buffDamagePct, t.buffRangePct, t.buffCooldownPct);
+    if (g.status != GameStatus.planning)
+        return;
+    int at = -1;
+    foreach (i; 0 .. st.numCrew)
+        if (st.crewIds[i] == t.crew)
+            at = i;
+    // Cycle: each villager in turn, then nobody.
+    immutable next = at + 1 < st.numCrew ? st.crewIds[at + 1] : noCrew;
+    nk_layout_row_dynamic(ctx, 22, 1);
+    char[64] buf = void;
+    const nn = st.crewName(next);
+    snprintf(buf.ptr, buf.length, "Post %.*s here", cast(int)nn.length, nn.ptr);
+    if (nk_button_label(ctx, buf.ptr))
+        gq.push(GameCommand(CommandType.assignCrew, t.kind, next, t.col, t.row));
+}
+
 /// The selected tower (stats, targeting, upgrades, sell) or special tile.
 private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq, ref const Game g) @nogc nothrow @trusted {
     const t = g.towerAt(st.selCol, st.selRow);
@@ -230,6 +256,29 @@ private void selectionInfo(nk_context* ctx, ref ViewerState st, ref GameQueue gq
         foreach (m; 0 .. 3)
             if (nk_option_label(ctx, targetingNames[m], t.targeting == m) && t.targeting != m)
                 gq.push(GameCommand(CommandType.setTargeting, t.kind, cast(ubyte)m, t.col, t.row));
+        if (st.numCrew > 0)
+            crewRow(ctx, st, gq, g, *t);
+    }
+    if (t.maxHp > 0) {
+        nk_layout_row_dynamic(ctx, 16, 1);
+        if (Game.wrecked(*t))
+            nk_label_colored(ctx, "Wrecked: it will not fire until repaired", NK_TEXT_LEFT,
+                    nk_color(255, 120, 100, 255));
+        else
+            labelf(ctx, "Walls %d/%d", t.hp, t.maxHp);
+        immutable cost = g.repairCost(*t);
+        if (cost > 0) {
+            nk_layout_row_dynamic(ctx, 22, 1);
+            char[40] rb = void;
+            snprintf(rb.ptr, rb.length, "Repair (%d gold)", cost);
+            immutable off = g.gold < cost || g.status == GameStatus.wave;
+            if (off)
+                nk_widget_disable_begin(ctx);
+            if (nk_button_label(ctx, rb.ptr))
+                gq.push(GameCommand(CommandType.repair, t.kind, 0, t.col, t.row));
+            if (off)
+                nk_widget_disable_end(ctx);
+        }
     }
     void upgradeButton(int branch, Stage next) {
         const ns = &cat.tower(t.kind, next);
@@ -585,6 +634,9 @@ void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref 
         case GameStatus.won:
             nk_label_colored(ctx, "Victory", NK_TEXT_LEFT, nk_color(120, 230, 120, 255));
             break;
+        case GameStatus.planning:
+            labelf(ctx, "Planning");
+            break;
         }
         if (g.status != GameStatus.waiting)
             nk_widget_disable_begin(ctx);
@@ -629,7 +681,7 @@ void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref 
     // Selected tower or special tile.
     immutable sp = g.board.special(st.selCol, st.selRow);
     if (!over && (g.towerAt(st.selCol, st.selRow) !is null || sp != SpecialKind.none)) {
-        immutable cw = 320.0f, ch = g.towerAt(st.selCol, st.selRow) !is null ? 270.0f : 50.0f;
+        immutable cw = 320.0f, ch = g.towerAt(st.selCol, st.selRow) !is null ? 360.0f : 50.0f;
         if (hudWindow(ctx, "hud_card", viewW - cw - 10, viewH - 68 - ch, cw, ch)) {
             selectionInfo(ctx, st, gq, g);
             nk_end(ctx);

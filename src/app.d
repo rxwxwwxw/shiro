@@ -27,8 +27,12 @@ import gui.menus : drawMenus;
 import village.interior : Interiors;
 import gui.nuklear_ui;
 import campaign.campaign : Campaign, internClockVars;
+import campaign.crews : applyCrews, canCrew, reportInjuries;
+import campaign.director : AttackPlan, CrewSnapshot, Director;
+import campaign.fort : Fort;
 import story.catalog_load : loadCatalog, LoadError;
 import story.program;
+import story.value : Value;
 import story.vm;
 import story.compile;
 import story.state;
@@ -99,6 +103,13 @@ private struct Viewer {
     Campaign campaign;
     /// The run in progress is Saturday's battle.
     bool weeklyBattle;
+    /// The battlefield's towers, crews and purse between visits.
+    Fort fort;
+    /// Wednesday night's planner, its own copy of the battlefield map, and the plan it made.
+    Director director;
+    MapSession* fieldMap;
+    AttackPlan attack;
+    bool haveAttack, planning;
     StoryState storyState;
     VillagePlan plan;
     WalkGrid walk;
@@ -131,6 +142,70 @@ private struct Viewer {
 
     ~this() @nogc nothrow {
         MapSession.release(session);
+        MapSession.release(fieldMap);
+    }
+
+    /// Battlefield seed: the same map all campaign long; Saturday's battle and the director's
+    /// probes use it as the game seed too, so the plan is fought the way it was planned.
+    uint fieldSeed() const @nogc nothrow pure @safe {
+        return (villageSeed * 977u + 1) & int.max;
+    }
+
+    /// Run modifiers for this week's Saturday (waves continue from the last battle).
+    RunModifiers saturdayMods() const @nogc nothrow @trusted {
+        RunModifiers m = fromStory(storyState);
+        m.waveOffset = fort.battles * campaign.wavesPerBattle;
+        m.waves = campaign.wavesPerBattle;
+        return m;
+    }
+
+    /// Wednesday night: the director starts sizing up the defenses as they stand.
+    void beginPlanningAttack() @nogc nothrow @trusted {
+        campaign.directorDue = false;
+        if (fieldMap is null) {
+            auto created = MapSession.create();
+            if (created.isErr)
+                return;
+            fieldMap = created.value;
+        }
+        GenParams p = state.params;
+        p.seed = fieldSeed();
+        if (fieldMap.regenerate(p).isErr)
+            return;
+        // Crews as they stand tonight (the story decides their worth).
+        CrewSnapshot crews;
+        {
+            Game g;
+            g.start(*fieldMap, fieldSeed(), saturdayMods(), &rules);
+            fort.restore(g);
+            applyCrews(g, dialogueDb, storyState);
+            crews.capture(g);
+        }
+        director.start(fieldMap, &fort, &rules, crews, saturdayMods(), fieldSeed());
+        planning = true;
+        printf("night falls: the enemy counts your towers...\n");
+    }
+
+    /// Thinks for a slice of the frame; when done the plan waits for Saturday, and the story hears
+    /// of it (`planned_attack` shares by creep id, `attack_strength` percent of normal).
+    void stepPlanningAttack() @nogc nothrow @trusted {
+        if (!planning || !director.step(1500))
+            return;
+        planning = false;
+        attack = director.plan;
+        haveAttack = true;
+        auto shares = storyState.newCollection(true);
+        int total = 0;
+        foreach (k; 0 .. rules.numCreeps)
+            total += attack.weights[k];
+        foreach (k; 0 .. rules.numCreeps)
+            if (attack.weights[k] > 0 && total > 0)
+                storyState.put(shares, storyState.symbol(rules.creeps[k].id),
+                        Value.number(attack.weights[k] * 100 / total));
+        storyState.setValue(storyState.intern("planned_attack"), shares);
+        storyState.set(storyState.intern("attack_strength"), attack.budgetPct);
+        printf("the enemy will come on Saturday at %d%% (you held %d%%), %d probes\n",
+                attack.budgetPct, attack.capacityPct, attack.probes);
     }
 
     /// Finds the cell under the pointer (not while the panel owns it or a drag pans the map) and
@@ -222,6 +297,13 @@ private struct Viewer {
         if (state.params.routes.enabled && session.network.allocated) {
             game.start(*session, state.params.seed, state.story ? runMods : RunModifiers.init, &rules);
             bot.setup(game);
+            if (state.story) {
+                // The campaign's battlefield: what stood there last time stands there again.
+                fort.restore(game);
+                if (!weeklyBattle)
+                    game.startPlanning();
+                applyCrews(game, dialogueDb, storyState);
+            }
         } else
             game.stop();
         fx.reset(game);
@@ -256,6 +338,9 @@ private struct Viewer {
                 state.errorTimer = 2.5f;
             }
         }
+        // Midweek the crew cards show what each posting is worth.
+        if (state.story && game.status == GameStatus.planning)
+            applyCrews(game, dialogueDb, storyState);
         onSimEvents();
     }
 
@@ -553,6 +638,8 @@ private struct Viewer {
         campaign.setup(&dialogueDb, &storyState);
         campaign.begin();
         weeklyBattle = false;
+        haveAttack = planning = false;
+        fort.begin(rules);
         state.screen = Screen.none;
         state.debugView = false;
         state.speed = 1;
@@ -560,13 +647,27 @@ private struct Viewer {
             startBattle(sdl, false);
     }
 
-    /// Out of the west gate: a tower defense map with the run the story earned.
+    /// Out of the west gate to the battlefield: Saturday's battle when it is due, else a midweek
+    /// visit to build and post crews (which takes time).
     void enterTd(SDL_Renderer* sdl) @nogc nothrow @trusted {
         scene = Scene.td;
         state.showPanel = true;
         runMods = fromStory(storyState);
-        // A new road each run, the same one for the same playthrough and run count.
-        state.params.seed = (villageSeed * 977u + cast(uint)storyState.named(varRuns) * 131u + 1) & int.max;
+        if (weeklyBattle) {
+            // Each Saturday picks up the waves where the last one stopped, as planned.
+            runMods = saturdayMods();
+            if (haveAttack)
+                attack.applyTo(runMods);
+        } else
+            campaign.act("field");
+        // The same battlefield all campaign long.
+        state.params.seed = fieldSeed();
+        state.numCrew = 0;
+        foreach (ref n; dialogueDb.npcs)
+            if (state.numCrew < state.crewIds.length && canCrew(dialogueDb, storyState, n.speaker)) {
+                state.crewIds[state.numCrew] = cast(ubyte)n.speaker;
+                state.crewNames[state.numCrew++] = dialogueDb.speakers[n.speaker].name;
+            }
         regenerate(sdl);
         printf("west road: +%d gold, creeps at %d%%, locked towers mask %d\n", runMods.bonusGold,
                 runMods.hpPct, runMods.lockedKinds);
@@ -577,13 +678,22 @@ private struct Viewer {
         if (!state.story || scene != Scene.td)
             return;
         immutable won = game.active && game.status == GameStatus.won;
-        recordRun(storyState, won, game.active ? game.waveNo : 0);
-        if (weeklyBattle) {
-            // Saturday is over: the clock moves on to the evening.
-            weeklyBattle = false;
-            campaign.battleOver();
-            campaign.spend(1);
+        if (game.active)
+            fort.save(game);
+        if (!weeklyBattle) {
+            // A midweek visit: home again with nothing fought.
+            enterVillage(sdl, false, false);
+            return;
         }
+        recordRun(storyState, won, game.active ? game.waveNo : 0);
+        haveAttack = false;
+        if (game.active && reportInjuries(game, dialogueDb, storyState) > 0)
+            printf("battle: %d of the crews were hurt\n", cast(int)game.injuries.length);
+        // Saturday is over: the clock moves on to the evening.
+        weeklyBattle = false;
+        fort.battles++;
+        campaign.battleOver();
+        campaign.spend(1);
         enterVillage(sdl, true, won);
     }
 
@@ -649,11 +759,14 @@ private struct Viewer {
             const n = e.kind == StoryEventKind.custom ? dialogueDb.eventNames[e.id] : e.a;
             printf("story event: %.*s\n", cast(int)n.length, n.ptr);
         }
+        if (campaign.directorDue && !planning)
+            beginPlanningAttack();
+        stepPlanningAttack();
         // Campaign beats wait for the conversation on screen to end.
         int scene;
         if (!world.talking && campaign.popScene(scene))
             world.playScene(scene);
-        if (!world.talking && campaign.battleDue && campaign.pendingScenes == 0 && !weeklyBattle) {
+        if (!world.talking && campaign.battleDue && campaign.pendingScenes == 0 && !weeklyBattle && !planning) {
             weeklyBattle = true;
             queue.push(CommandKind.regenerate);
         }

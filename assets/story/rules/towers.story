@@ -4,7 +4,8 @@
 # eleven stages: Lv1, Lv2, Lv3, then specializations A1..A4 and B1..B4 (the upgrade at Lv3
 # picks a path; `branches: false` climbs path A only). Keys are the fields of TowerStats in
 # src/td/defs.d; missing keys are 0 (targets, splashEdge and chainKeep default to 1, 100, 100).
-# `look` names the built-in kind whose model a new kind borrows.
+# `look` names the built-in kind whose model a new kind borrows; `hp` is what it takes from siege
+# creeps before it is wrecked (each level adds a quarter of it).
 #
 # Only four stages per kind are written out; `tower_line` grows the rest from them, the way the
 # hand-tuned anchors always have.
@@ -80,7 +81,7 @@ def income_line(a):
 
 data towers = [
     # Arrow: cheap, fast, single target.
-    {id: "arrow", behavior: :projectile, look: :arrow, stages: tower_line([
+    {id: "arrow", hp: 220, behavior: :projectile, look: :arrow, stages: tower_line([
         {name: "Arrow", cost: 50, range: 2800, cooldown: 20, damage: 12, type: :physical, projSpeed: 320,
          blurb: "Fast single shots"},
         {name: "Arrow II", cost: 60, range: 3000, cooldown: 16, damage: 20, type: :physical, projSpeed: 340,
@@ -91,7 +92,7 @@ data towers = [
          targets: 3, blurb: "Three arrows at once"},
     ])},
     # Cannon: slow shells that splash.
-    {id: "cannon", behavior: :shell, look: :cannon, stages: tower_line([
+    {id: "cannon", hp: 300, behavior: :shell, look: :cannon, stages: tower_line([
         {name: "Cannon", cost: 80, range: 2600, cooldown: 50, damage: 30, type: :physical, projSpeed: 110,
          splash: 900, splashEdge: 40, blurb: "Explosive splash"},
         {name: "Cannon II", cost: 90, range: 2700, cooldown: 48, damage: 50, type: :physical, projSpeed: 115,
@@ -102,7 +103,7 @@ data towers = [
          splash: 1500, splashEdge: 50, shred: 10, blurb: "Massive blast, shreds armor"},
     ])},
     # Frost: chilling shards that slow.
-    {id: "frost", behavior: :shard, look: :frost, stages: tower_line([
+    {id: "frost", hp: 220, behavior: :shard, look: :frost, stages: tower_line([
         {name: "Frost", cost: 70, range: 2400, cooldown: 35, damage: 6, type: :magic, projSpeed: 220,
          splash: 700, slowPct: 35, slowTicks: 60, blurb: "Slows a small area"},
         {name: "Frost II", cost: 80, range: 2500, cooldown: 32, damage: 10, type: :magic, projSpeed: 230,
@@ -114,7 +115,7 @@ data towers = [
          blurb: "Chilled take +40% damage"},
     ])},
     # Tesla: instant chain lightning, ignores armor.
-    {id: "tesla", behavior: :chain, look: :tesla, stages: tower_line([
+    {id: "tesla", hp: 240, behavior: :chain, look: :tesla, stages: tower_line([
         {name: "Tesla", cost: 100, range: 2600, cooldown: 40, damage: 22, type: :magic,
          chains: 2, chainRange: 1800, chainKeep: 85, blurb: "Chain lightning"},
         {name: "Tesla II", cost: 110, range: 2700, cooldown: 38, damage: 34, type: :magic,
@@ -125,7 +126,7 @@ data towers = [
          stunTicks: 30, blurb: "One huge bolt that stuns"},
     ])},
     # Flame: short-range cone that sets creeps alight.
-    {id: "flame", behavior: :cone, look: :flame, stages: tower_line([
+    {id: "flame", hp: 260, behavior: :cone, look: :flame, stages: tower_line([
         {name: "Flame", cost: 90, range: 1900, cooldown: 12, damage: 4, type: :fire,
          burnDmg: 3, burnTicks: 60, coneCos: 70, blurb: "Burning cone"},
         {name: "Flame II", cost: 100, range: 2000, cooldown: 12, damage: 6, type: :fire,
@@ -136,7 +137,7 @@ data towers = [
          burnDmg: 5, burnTicks: 60, coneCos: 70, patchTicks: 150, blurb: "Leaves burning ground"},
     ])},
     # Mine: gold income per cleared wave, only on gold veins.
-    {id: "mine", behavior: :income, look: :mine, vein: true, branches: false, stages: income_line([
+    {id: "mine", hp: 160, behavior: :income, look: :mine, vein: true, branches: false, stages: income_line([
         {name: "Mine", cost: 120, income: 25, blurb: "+25 gold per wave"},
         {name: "Mine II", cost: 150, income: 60, blurb: "+60 gold per wave"},
     ])},

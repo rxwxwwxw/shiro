@@ -36,6 +36,8 @@ struct TowerDef {
     bool vein;
     /// Splits into specializations A and B after Lv3; otherwise it climbs path A.
     bool branches = true;
+    /// Hit points against siege creeps (0: it cannot be damaged).
+    int hp;
     /// Stats by Stage (lv1 .. lv3, a1 .. a4, b1 .. b4).
     TowerStats[numStages] stages;
 }
@@ -71,6 +73,11 @@ struct Economy {
     /// Wave budget: base + linear * wave + quad * wave².
     int budgetBase = 60, budgetLinear = 25, budgetQuad = 2;
     int bossEvery = 10;
+    /// Chance (percent) that a tower's crew is hurt when it falls below half its hit points, and
+    /// when it is wrecked.
+    int injuryAtHalfPct = 20, injuryAtWreckPct = 60;
+    /// Repairs cost this percent of what the tower is worth, in proportion to the damage.
+    int repairPct = 50;
 }
 
 struct Catalog {
@@ -128,6 +135,11 @@ struct Catalog {
         foreach (t; 1 .. tierOf(s) + 1)
             g += towers[k].stages[stageAt(br, t)].cost;
         return g;
+    }
+
+    /// Hit points of a tower of `k` at stage `s`: each level adds a quarter of the base.
+    int towerHp(TowerKind k, Stage s) const @nogc nothrow pure @safe {
+        return towers[k].hp * (100 + 25 * (tierOf(s) - 1)) / 100;
     }
 
     /// Hit points of a creep in wave `wave` (1-based), compounding per wave.
@@ -234,6 +246,7 @@ private Catalog makeDefault() @nogc nothrow pure @safe {
     static immutable string[numCreepKinds] creepIds = ["grunt", "runner", "brute", "swarm", "boss"];
     static immutable int[numCreepKinds] unlock = [1, 3, 6, 4, 1];
     static immutable int[numCreepKinds] weight = [5, 3, 2, 2, 0];
+    static immutable int[numTowerKinds] towerHp = [220, 300, 220, 240, 260, 160];
     Catalog c;
     c.numTowers = numTowerKinds;
     foreach (k; 0 .. numTowerKinds) {
@@ -242,6 +255,7 @@ private Catalog makeDefault() @nogc nothrow pure @safe {
         c.towers[k].look = cast(TowerKind)k;
         c.towers[k].vein = k == TowerKind.mine;
         c.towers[k].branches = k != TowerKind.mine;
+        c.towers[k].hp = towerHp[k];
         c.towers[k].stages = towerTable[k];
     }
     c.numCreeps = numCreepKinds;
@@ -254,13 +268,18 @@ private Catalog makeDefault() @nogc nothrow pure @safe {
         c.creeps[k].pack = k == CreepKind.swarm ? 5 : 0;
         c.creeps[k].boss = k == CreepKind.boss;
     }
+    // Siege creeps: they wear towers down (and the people in them) as they pass.
+    c.creeps[c.numCreeps++] = CreepDef("sapper", CreepKind.runner, CreepStats("Sapper", 45, 40, 10,
+            8, 1, 15, 20, 0, 6, 1300, 60), 7, 1, 0, false);
+    c.creeps[c.numCreeps++] = CreepDef("ram", CreepKind.brute, CreepStats("Battering ram", 320, 18,
+            55, 20, 2, 45, 40, 60, 20, 1100, 120), 11, 1, 0, false);
     return c;
 }
 
 @nogc nothrow @safe unittest {
     // The default catalog answers like the D tables it was built from.
     alias c = defaultCatalog;
-    assert(c.numTowers == numTowerKinds && c.numCreeps == numCreepKinds);
+    assert(c.numTowers == numTowerKinds && c.numCreeps == numCreepKinds + 2);
     foreach (k; 0 .. numTowerKinds)
         foreach (s; 0 .. numStages) {
             immutable kind = cast(TowerKind)k, st = cast(Stage)s;

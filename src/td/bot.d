@@ -122,12 +122,18 @@ struct Bot {
     void act(ref Game g) @nogc nothrow @trusted {
         if (spots is null || g.tick % every != 0)
             return;
-        if (g.status != GameStatus.waiting && g.status != GameStatus.wave)
+        if (g.status != GameStatus.waiting && g.status != GameStatus.wave && g.status != GameStatus.planning)
             return;
         if (g.board.stage != rankedStage)
             rank(g);
         decisions++;
         const cat = &g.catalog();
+        // Wrecks fire nothing: mend them first, between waves.
+        if (g.status != GameStatus.wave)
+            foreach (ref t; g.towers)
+                if (t.alive && Game.wrecked(t) && g.gold >= g.repairCost(t))
+                    if (g.apply(GameCommand(CommandType.repair, t.kind, 0, t.col, t.row)) == CommandError.none)
+                        return;
         // Mines on free veins pay for themselves within a few waves.
         int mine = -1;
         foreach (k; 0 .. cat.numTowers)

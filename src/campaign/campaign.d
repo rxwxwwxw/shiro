@@ -21,8 +21,8 @@ enum string varWeek = "week", varToday = "today", varTime = "time";
 /// `data actions = {rest: 1, ...}` (slots each action costs).
 enum string varCampaignData = "campaign", varActions = "actions";
 
-/// Weeks a campaign lasts when the story does not say.
-enum int defaultWeeks = 6;
+/// Weeks a campaign lasts, and waves a battle has, when the story does not say.
+enum int defaultWeeks = 6, defaultWavesPerBattle = 5;
 /// When the beats fall.
 enum Day directorDay = Day.wed, battleDay = Day.sat;
 enum Slot directorSlot = Slot.night, battleSlot = Slot.afternoon;
@@ -36,6 +36,8 @@ void internClockVars(ref StoryState st) @nogc nothrow @safe {
 struct Campaign {
     Calendar cal;
     int weeks = defaultWeeks;
+    /// Waves in each Saturday battle (`campaign.wavesPerBattle`).
+    int wavesPerBattle = defaultWavesPerBattle;
     /// The last week has ended.
     bool over;
     /// Wednesday night came: the director should plan Saturday's attack (it clears this).
@@ -60,6 +62,8 @@ struct Campaign {
         int w;
         if (toIntExact(st.at(data, Value.constText("weeks")), w) && w > 0)
             weeks = w;
+        if (toIntExact(st.at(data, Value.constText("wavesPerBattle")), w) && w > 0)
+            wavesPerBattle = w;
     }
 
     /// Monday dawn of week 1: publishes the clock and fires the first day's triggers.

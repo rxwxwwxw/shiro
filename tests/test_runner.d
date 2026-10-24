@@ -28,7 +28,7 @@ import tests.test_campaign;
 import core.bitset, core.noise, core.random, core.result, core.json, core.file;
 import story.pool, story.value, story.state, story.program, story.syntax, story.compile, story.vm,
     story.td_link, story.catalog_load;
-import campaign.calendar, campaign.campaign;
+import campaign.calendar, campaign.campaign, campaign.fort, campaign.crews, campaign.director;
 import village.walk, village.plan, village.world, village.bot;
 import wfc.cell, wfc.decorations, wfc.grid_connector, wfc.hex, wfc.map_generator, wfc.map_session,
     wfc.recovery, wfc.road_rules, wfc.placement, wfc.routes, wfc.passability, viewer.cli,

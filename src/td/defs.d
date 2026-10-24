@@ -400,6 +400,9 @@ struct CreepStats {
     int gap;
     /// Percent of slow it shrugs off.
     int slowResist;
+    /// Siege: damage dealt to a tower within `siegeRange` (world units) every `siegeCooldown`
+    /// ticks while it walks (0: it ignores towers).
+    int siegeDamage, siegeRange, siegeCooldown;
 }
 
 immutable CreepStats[numCreepKinds] creepTable = [

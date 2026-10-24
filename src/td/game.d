@@ -18,6 +18,8 @@ import wfc.passability : unreachable;
 
 enum int maxCreeps = 2048, maxProjectiles = 1024, maxTowers = 1024, maxPatches = 128;
 enum int maxEvents = 2048;
+/// Tower crew value for "nobody" (crews are opaque ids the campaign hands out, below this).
+enum ubyte noCrew = 255;
 
 enum Targeting : ubyte {
     /// Furthest along the road (closest to leaking).
@@ -45,6 +47,10 @@ struct Creep {
     ubyte chillPct;
     ushort slowTicks, chillTicks, stunTicks, burnTicks;
     ushort burnDmg;
+    /// Ticks until a siege creep strikes again.
+    ushort siegeTicks;
+    /// Road to walk when it spawned (step units).
+    int pathStart;
 }
 
 struct Tower {
@@ -65,6 +71,12 @@ struct Tower {
     uint lastFired;
     int shots, kills;
     long dealt;
+    /// Villager manning it (an id the campaign gives out), or noCrew.
+    ubyte crew = noCrew;
+    /// Hit points (0 max: it cannot be damaged).
+    int hp, maxHp;
+    /// Percent changes from the crew (or the lack of one), set before the battle.
+    int buffDamagePct, buffRangePct, buffCooldownPct;
 }
 
 enum ProjKind : ubyte {
@@ -126,7 +138,15 @@ enum EventKind : ubyte {
     gameOver,
     victory,
     /// More of the map was uncovered; value = the new stage.
-    reveal
+    reveal,
+    /// A siege creep struck a tower: a = tower kind; (x, y) tower, (x2, y2) creep; value = damage.
+    towerHit,
+    /// A tower was wrecked: a = tower kind; (x, y) tower.
+    towerDown,
+    /// A tower's crew was hurt: a = crew; (x, y) tower.
+    crewInjured,
+    /// value = gold paid for repairs; (x, y) tower.
+    repaired
 }
 
 struct SimEvent {
@@ -141,7 +161,9 @@ enum GameStatus : ubyte {
     waiting,
     wave,
     lost,
-    won
+    won,
+    /// Midweek on the battlefield: building and crewing, no waves and no clock.
+    planning
 }
 
 enum CommandType : ubyte {
@@ -149,7 +171,11 @@ enum CommandType : ubyte {
     upgrade,
     sell,
     startWave,
-    setTargeting
+    setTargeting,
+    /// Puts crew `arg` on the tower (taking them off any other); noCrew sends its crew home.
+    assignCrew,
+    /// Mends a damaged or wrecked tower for gold (not while a wave is on).
+    repair
 }
 
 struct GameCommand {
@@ -176,7 +202,9 @@ enum CommandError : ubyte {
     /// The cell is still in the fog.
     hidden,
     /// The story has not unlocked this tower kind yet.
-    locked
+    locked,
+    /// Nothing to repair.
+    intact
 }
 
 /// Adjustments a run starts with, decided outside the simulation (the village story). The
@@ -188,6 +216,15 @@ struct RunModifiers {
     ushort lockedKinds;
     /// Creep hit points in percent of normal.
     int hpPct = 100;
+    /// Waves are built as if this many came before (a campaign's later battles are harder).
+    int waveOffset;
+    /// Waves to clear for a win (0: the rules' totalWaves).
+    int waves;
+    /// A planned attack (campaign.director): each wave's budget is `budgetPct` percent of normal
+    /// and kinds are picked by `weights` instead of the rules' pick weights.
+    bool aimed;
+    int budgetPct = 100;
+    int[maxCreepKinds] weights;
 }
 
 struct Game {
@@ -206,6 +243,12 @@ struct Game {
     private int waveSpawned, waveTick;
     private uint tick_, seed_, serials;
     private RunModifiers mods_;
+    /// Crews hurt this game, in order (a crew appears once).
+    private ubyte[64] injured_;
+    private int numInjured_;
+    /// Road covered by creeps that are gone (permille of their walk, summed) and their number.
+    private long reachSum_;
+    private int reachCount_;
     /// The rules (tower and creep kinds, economy); the shipped defaults unless `start` got others.
     private const(Catalog)* cat_ = &defaultCatalog;
     private ulong catHash_;
@@ -295,12 +338,14 @@ struct Game {
             gold = 0;
         lives = cat_.econ.startLives;
         waveNo = 0;
-        waveLimit = cat_.econ.totalWaves;
+        waveLimit = mods_.waves > 0 ? mods_.waves : cat_.econ.totalWaves;
         wavesPerStage = 0;
         status = GameStatus.waiting;
         countdown = cat_.econ.firstWaveDelay;
         creepsAlive = killed = leaked = 0;
         droppedEvents = 0;
+        numInjured_ = 0;
+        reachSum_ = reachCount_ = 0;
     }
 
     bool active() const @nogc nothrow pure @safe {
@@ -358,6 +403,29 @@ struct Game {
         return patches_ is null ? null : patches_[0 .. maxPatches];
     }
 
+    /// How far creeps got before they died or leaked, on average (permille of their road).
+    int reachPermille() const @nogc nothrow pure @safe {
+        return reachCount_ ? cast(int)(reachSum_ / reachCount_) : 0;
+    }
+
+    /// Crews hurt so far this game (each once).
+    const(ubyte)[] injuries() const return @nogc nothrow pure @safe {
+        return injured_[0 .. numInjured_];
+    }
+
+    /// True for a tower siege creeps have knocked out (it no longer fires).
+    static bool wrecked(ref const Tower t) @nogc nothrow pure @safe {
+        return t.maxHp > 0 && t.hp <= 0;
+    }
+
+    /// Gold a repair of `t` costs now (0 when it is whole).
+    int repairCost(ref const Tower t) const @nogc nothrow pure @safe {
+        if (t.maxHp <= 0 || t.hp >= t.maxHp)
+            return 0;
+        immutable c = cast(long)t.invested * cat_.econ.repairPct * (t.maxHp - t.hp) / (100L * t.maxHp);
+        return c < 1 ? 1 : cast(int)c;
+    }
+
     /// Events of the last tick.
     const(SimEvent)[] events() const @nogc nothrow @trusted {
         return events_ is null ? null : events_[0 .. numEvents_];
@@ -380,9 +448,68 @@ struct Game {
         return t == 0 ? null : &towers_[t - 1];
     }
 
-    /// Effective range of a tower, high ground included.
+    /// Effective range of a tower, high ground and crew included.
     int rangeOf(ref const Tower t) const @nogc nothrow pure @safe {
-        return cat_.tower(t.kind, t.stage).range * (100 + t.rangePct) / 100;
+        immutable pct = 100 + t.rangePct + t.buffRangePct;
+        return cat_.tower(t.kind, t.stage).range * (pct < 10 ? 10 : pct) / 100;
+    }
+
+    /// Damage of one hit from `t` (ley stone and crew included).
+    int damageOf(ref const Tower t, int base) const @nogc nothrow pure @safe {
+        immutable pct = (t.ley ? 100 + cat_.econ.leyDamagePct : 100) * (100 + t.buffDamagePct) / 100;
+        return base * (pct < 10 ? 10 : pct) / 100;
+    }
+
+    /// Ticks between attacks of `t` (the crew may speed it up).
+    int cooldownOf(ref const Tower t) const @nogc nothrow pure @safe {
+        immutable c = cat_.tower(t.kind, t.stage).cooldown * (100 + t.buffCooldownPct) / 100;
+        return c < 1 ? 1 : c;
+    }
+
+    /// Midweek: no waves, no clock; building, upgrading and crewing only.
+    void startPlanning() @nogc nothrow pure @safe {
+        status = GameStatus.planning;
+        countdown = 0;
+    }
+
+    /// Puts a tower back where it stood (no gold changes hands; `invested` is what it cost).
+    /// False when the cell is taken or outside, or the pool is full.
+    bool restoreTower(TowerKind kind, Stage stage, int col, int row, Targeting targeting,
+            int invested, int hp, ubyte crew) @nogc nothrow @trusted {
+        if (!active || kind >= cat_.numTowers || !board_.inside(col, row))
+            return false;
+        if (towerAt_[cast(size_t)row * board_.rect.cols + col] != 0)
+            return false;
+        immutable g = gold;
+        if (place(kind, col, row) != CommandError.none)
+            return false;
+        gold = g;
+        auto t = mutableTower(col, row);
+        t.stage = stage;
+        t.targeting = targeting;
+        t.invested = invested;
+        t.crew = crew;
+        t.maxHp = cat_.towerHp(kind, stage);
+        t.hp = hp < 0 || hp > t.maxHp ? t.maxHp : hp;
+        return true;
+    }
+
+    /// Crew of tower `i` (index into `towers`); a crew already elsewhere moves here.
+    void setCrew(int i, ubyte crew) @nogc nothrow @trusted {
+        assert(i >= 0 && i < numTowers_);
+        if (crew != noCrew)
+            foreach (k; 0 .. numTowers_)
+                if (towers_[k].alive && towers_[k].crew == crew)
+                    towers_[k].crew = noCrew;
+        towers_[i].crew = crew;
+    }
+
+    /// Percent changes the crew of tower `i` makes (decided outside the simulation).
+    void setCrewBuff(int i, int damagePct, int rangePct, int cooldownPct) @nogc nothrow @trusted {
+        assert(i >= 0 && i < numTowers_);
+        towers_[i].buffDamagePct = damagePct;
+        towers_[i].buffRangePct = rangePct;
+        towers_[i].buffCooldownPct = cooldownPct;
     }
 
     /// Why `kind` could not be placed on (col, row) right now (`none` if it can).
@@ -444,6 +571,9 @@ struct Game {
             put(i);
             put(t.kind * numStages + t.stage);
             put(t.cooldown);
+            put(t.crew);
+            put(t.hp);
+            put(t.buffDamagePct * 1_000_000L + t.buffRangePct * 1000L + t.buffCooldownPct);
         }
         foreach (i; 0 .. maxProjectiles)
             if (projs_[i].alive) {
@@ -477,6 +607,10 @@ struct Game {
                     return CommandError.noGold;
                 gold -= cost;
                 t.stage = next;
+                // Upgrades raise the walls too.
+                immutable more = cat_.towerHp(t.kind, next) - t.maxHp;
+                t.maxHp += more;
+                t.hp += more > 0 && t.hp > 0 ? more : 0;
                 t.invested += cost;
                 emit(SimEvent(EventKind.upgraded, t.kind, next, t.x, t.y));
                 return CommandError.none;
@@ -490,6 +624,31 @@ struct Game {
                 towerAt_[t.cell] = 0;
                 t.alive = false;
                 emit(SimEvent(EventKind.sold, t.kind, t.stage, t.x, t.y, 0, 0, refund));
+                return CommandError.none;
+            }
+        case CommandType.assignCrew: {
+                auto t = mutableTower(cmd.col, cmd.row);
+                if (t is null)
+                    return CommandError.noTower;
+                if (!cat_.fights(t.kind))
+                    return CommandError.wrongTile;
+                setCrew(cast(int)(t - towers_), cmd.arg);
+                return CommandError.none;
+            }
+        case CommandType.repair: {
+                auto t = mutableTower(cmd.col, cmd.row);
+                if (t is null)
+                    return CommandError.noTower;
+                if (status == GameStatus.wave)
+                    return CommandError.wrongPhase;
+                immutable cost = repairCost(*t);
+                if (cost == 0)
+                    return CommandError.intact;
+                if (gold < cost)
+                    return CommandError.noGold;
+                gold -= cost;
+                t.hp = t.maxHp;
+                emit(SimEvent(EventKind.repaired, t.kind, t.stage, t.x, t.y, 0, 0, cost));
                 return CommandError.none;
             }
         case CommandType.startWave:
@@ -537,6 +696,7 @@ struct Game {
         t.ley = board_.specialAt(i) == SpecialKind.leyStone;
         t.rangePct = board_.highGroundPct(i, cat_.econ.highGroundPctPerLevel, cat_.econ.highGroundCapPct);
         t.invested = cat_.tower(kind, Stage.lv1).cost;
+        t.hp = t.maxHp = cat_.towerHp(kind, Stage.lv1);
         // A new tower takes a moment to man.
         t.cooldown = ticksPerSecond / 2;
         gold -= t.invested;
@@ -564,7 +724,7 @@ struct Game {
         if (!active)
             return;
         numEvents_ = 0;
-        if (status == GameStatus.lost || status == GameStatus.won)
+        if (status == GameStatus.lost || status == GameStatus.won || status == GameStatus.planning)
             return;
         tick_++;
         if (status == GameStatus.waiting && --countdown <= 0)
@@ -574,6 +734,7 @@ struct Game {
         moveCreeps();
         updateEffects();
         grid.rebuild(creeps_[0 .. maxCreeps]);
+        updateSiege();
         updatePatches();
         updateTowers();
         updateProjectiles();
@@ -583,7 +744,13 @@ struct Game {
 
     private void startWave() @nogc nothrow @trusted {
         waveNo++;
-        buildWave(*cat_, waveNo, seed_, wave_);
+        immutable w = waveNo + mods_.waveOffset;
+        if (mods_.aimed)
+            buildWave(*cat_, w, seed_,
+                    cast(int)(cast(long)cat_.waveBudget(w) * mods_.budgetPct / 100),
+                    mods_.weights[0 .. cat_.numCreeps], wave_);
+        else
+            buildWave(*cat_, w, seed_, wave_);
         waveSpawned = 0;
         waveTick = 0;
         status = GameStatus.wave;
@@ -591,7 +758,7 @@ struct Game {
     }
 
     private void clearWave() @nogc nothrow @trusted {
-        int pay = cat_.waveClearBonus(waveNo);
+        int pay = cat_.waveClearBonus(waveNo + mods_.waveOffset);
         foreach (i; 0 .. numTowers_) {
             const t = &towers_[i];
             if (t.alive && !cat_.fights(t.kind)) {
@@ -650,12 +817,14 @@ struct Game {
             c.kind = kind;
             c.alive = true;
             c.serial = ++serials;
-            immutable hp = cast(long)cat_.scaledHp(kind, waveNo > 0 ? waveNo : 1) * mods_.hpPct / 100;
+            immutable hp = cast(long)cat_.scaledHp(kind, (waveNo > 0 ? waveNo : 1) + mods_.waveOffset)
+                * mods_.hpPct / 100;
             c.hp = c.maxHp = hp < 1 ? 1 : cast(int)hp;
             c.armor = cast(ubyte)cat_.creep(kind).armor;
             c.cell = cell;
             c.next = chooseNext(cell, c.serial);
             placeCreep(*c);
+            c.pathStart = c.pathLeft;
             c.px = c.x;
             c.py = c.y;
             creepsAlive++;
@@ -731,6 +900,8 @@ struct Game {
         c.alive = false;
         creepsAlive--;
         leaked++;
+        reachSum_ += 1000;
+        reachCount_++;
         lives -= cost;
         emit(SimEvent(EventKind.leak, c.kind, 0, x, y, 0, 0, cost));
         if (lives <= 0) {
@@ -776,6 +947,11 @@ struct Game {
         c.alive = false;
         creepsAlive--;
         killed++;
+        if (c.pathStart > 0 && c.pathStart != int.max) {
+            immutable walked = c.pathStart - (c.pathLeft > 0 ? c.pathLeft : 0);
+            reachSum_ += walked * 1000L / c.pathStart;
+            reachCount_++;
+        }
         immutable bounty = cat_.creep(c.kind).bounty;
         gold += bounty;
         if (ti >= 0)
@@ -811,6 +987,68 @@ struct Game {
             c.chillPct = cast(ubyte)pct;
         if (ticks > c.chillTicks)
             c.chillTicks = cast(ushort)ticks;
+    }
+
+    /// Siege creeps strike the nearest standing tower in reach (they keep walking). A tower that
+    /// drops below half its hit points, and again when it is wrecked, may cost its crew.
+    private void updateSiege() @nogc nothrow @trusted {
+        if (numTowers_ == 0)
+            return;
+        foreach (ci; 0 .. maxCreeps) {
+            auto c = &creeps_[ci];
+            if (!c.alive)
+                continue;
+            const cs = &cat_.creep(c.kind);
+            if (cs.siegeDamage <= 0)
+                continue;
+            if (c.siegeTicks > 0) {
+                c.siegeTicks--;
+                continue;
+            }
+            int best = -1;
+            long bestD = cast(long)cs.siegeRange * cs.siegeRange;
+            foreach (ti; 0 .. numTowers_) {
+                const t = &towers_[ti];
+                if (!t.alive || t.maxHp <= 0 || t.hp <= 0)
+                    continue;
+                immutable d = dist2(t.x, t.y, c.x, c.y);
+                if (d <= bestD) {
+                    bestD = d;
+                    best = ti;
+                }
+            }
+            if (best < 0)
+                continue;
+            c.siegeTicks = cast(ushort)(cs.siegeCooldown > 0 ? cs.siegeCooldown : 1);
+            auto t = &towers_[best];
+            immutable before = t.hp;
+            t.hp = t.hp > cs.siegeDamage ? t.hp - cs.siegeDamage : 0;
+            emit(SimEvent(EventKind.towerHit, t.kind, t.stage, t.x, t.y, c.x, c.y, before - t.hp));
+            immutable half = t.maxHp / 2;
+            if (before > half && t.hp <= half && t.hp > 0)
+                hurtCrew(*t, best, cat_.econ.injuryAtHalfPct);
+            if (t.hp == 0) {
+                emit(SimEvent(EventKind.towerDown, t.kind, t.stage, t.x, t.y));
+                hurtCrew(*t, best, cat_.econ.injuryAtWreckPct);
+                // Nobody fires a wreck.
+                t.crew = noCrew;
+            }
+        }
+    }
+
+    /// The crew of tower `ti` is hurt with chance `pct` (decided by hash: replays agree). A hurt
+    /// crew leaves the post and the crew's help goes with them.
+    private void hurtCrew(ref Tower t, int ti, int pct) @nogc nothrow @trusted {
+        if (t.crew == noCrew || mix(seed_, tick_, cast(uint)ti * 31 + t.crew) % 100 >= cast(uint)pct)
+            return;
+        emit(SimEvent(EventKind.crewInjured, t.crew, 0, t.x, t.y));
+        bool seen = false;
+        foreach (k; 0 .. numInjured_)
+            seen |= injured_[k] == t.crew;
+        if (!seen && numInjured_ < injured_.length)
+            injured_[numInjured_++] = t.crew;
+        t.crew = noCrew;
+        t.buffDamagePct = t.buffRangePct = t.buffCooldownPct = 0;
     }
 
     private void updatePatches() @nogc nothrow @trusted {
@@ -872,7 +1110,7 @@ struct Game {
     private void updateTowers() @nogc nothrow @trusted {
         foreach (ti; 0 .. numTowers_) {
             auto t = &towers_[ti];
-            if (!t.alive || !cat_.fights(t.kind))
+            if (!t.alive || !cat_.fights(t.kind) || wrecked(*t))
                 continue;
             if (t.cooldown > 0) {
                 t.cooldown--;
@@ -883,8 +1121,8 @@ struct Game {
             immutable n = grid.query(creeps(), t.x, t.y, range, scratch[0 .. maxCreeps]);
             if (n == 0)
                 continue;
-            immutable dmg = st.damage * (t.ley ? 100 + cat_.econ.leyDamagePct : 100) / 100;
-            t.cooldown = st.cooldown;
+            immutable dmg = damageOf(*t, st.damage);
+            t.cooldown = cooldownOf(*t);
             t.lastFired = tick_;
             t.shots++;
             if (st.pulse) {
@@ -972,7 +1210,7 @@ struct Game {
             // Inside the cone: angle to the aim line under acos(coneCos / 100).
             if (dd > 0 && (dot <= 0 || dot * dot * 10_000 < cos2 * dd * (ex * ex + ey * ey)))
                 continue;
-            burn(*c, st.burnDmg * (t.ley ? 100 + cat_.econ.leyDamagePct : 100) / 100, st.burnTicks);
+            burn(*c, damageOf(t, st.burnDmg), st.burnTicks);
             hurt(scratch[k], dmg, st.type, 0, ti);
         }
         if (st.patchTicks > 0 && t.shots % 4 == 1)
@@ -1526,4 +1764,114 @@ version (unittest) {
     assert(g.towerAt(5, 2) !is null);
     assert(g.board.numSources == 1 && g.board.sources[0] == offsetToCube(18, 3));
     assert(g.apply(placeCmd(TowerKind.arrow, 14, 2)) == CommandError.none);
+}
+
+@nogc nothrow unittest {
+    // Midweek planning: no waves and no clock, but building and crewing work. A crew moves rather
+    // than standing on two towers; buffs change damage, range and cooldown.
+    Game g;
+    straightBoard(g);
+    g.startPlanning();
+    assert(g.apply(GameCommand(CommandType.startWave)) == CommandError.wrongPhase);
+    immutable tick0 = g.tick;
+    foreach (t; 0 .. 100)
+        g.advance();
+    assert(g.tick == tick0 && g.waveNo == 0 && g.creepsAlive == 0);
+    assert(g.apply(placeCmd(TowerKind.arrow, 5, 2)) == CommandError.none);
+    assert(g.apply(placeCmd(TowerKind.cannon, 8, 2)) == CommandError.none);
+    assert(g.apply(GameCommand(CommandType.assignCrew, TowerKind.arrow, 3, 5, 2)) == CommandError.none);
+    assert(g.towerAt(5, 2).crew == 3);
+    assert(g.apply(GameCommand(CommandType.assignCrew, TowerKind.arrow, 3, 8, 2)) == CommandError.none);
+    assert(g.towerAt(5, 2).crew == noCrew && g.towerAt(8, 2).crew == 3);
+    assert(g.apply(GameCommand(CommandType.assignCrew, TowerKind.arrow, noCrew, 8, 2)) == CommandError.none);
+    assert(g.towerAt(8, 2).crew == noCrew);
+    assert(g.apply(GameCommand(CommandType.assignCrew, TowerKind.arrow, 1, 9, 9)) == CommandError.noTower);
+    const a = g.towerAt(5, 2);
+    immutable r0 = g.rangeOf(*a), d0 = g.damageOf(*a, 100), c0 = g.cooldownOf(*a);
+    g.setCrewBuff(0, 20, 10, -25);
+    assert(g.damageOf(*a, 100) == 120 && g.rangeOf(*a) == r0 * 110 / 100 && g.cooldownOf(*a) == c0 * 75 / 100);
+    g.setCrewBuff(0, -500, -500, -500);
+    assert(g.damageOf(*a, 100) == 10 && g.cooldownOf(*a) == 1 && d0 == 100);
+}
+
+@nogc nothrow unittest {
+    // Towers put back from a save keep their stage, targeting, investment and crew, cost no
+    // gold, and refuse taken cells.
+    Game g;
+    straightBoard(g);
+    immutable gold0 = g.gold;
+    assert(g.restoreTower(TowerKind.tesla, Stage.b2, 6, 2, Targeting.strongest, 777, -1, 4));
+    assert(!g.restoreTower(TowerKind.arrow, Stage.lv1, 6, 2, Targeting.first, 50, 0, noCrew));
+    assert(!g.restoreTower(TowerKind.arrow, Stage.lv1, 60, 2, Targeting.first, 50, 0, noCrew));
+    const t = g.towerAt(6, 2);
+    assert(g.gold == gold0 && t.stage == Stage.b2 && t.targeting == Targeting.strongest);
+    assert(t.invested == 777 && t.crew == 4 && g.towers.length == 1);
+}
+
+@nogc nothrow unittest {
+    // Siege creeps wear down the nearest tower in reach as they pass; a wreck stops firing, its
+    // crew may be hurt (once), and a repair between waves makes it whole for gold.
+    Game g;
+    straightBoard(g);
+    g.status = GameStatus.wave;
+    assert(g.apply(placeCmd(TowerKind.arrow, 8, 2)) == CommandError.none);
+    immutable ram = defaultCatalog.findCreep("ram");
+    assert(ram > 0 && defaultCatalog.creep(cast(CreepKind)ram).siegeDamage > 0);
+    g.setCrew(0, 9);
+    const t = g.towerAt(8, 2);
+    assert(t.maxHp == defaultCatalog.towers[TowerKind.arrow].hp && t.hp == t.maxHp);
+    // A stunned ram stays in reach until the tower falls.
+    immutable c = dropCreep(g, cast(CreepKind)ram, 8);
+    bool hit, down;
+    foreach (k; 0 .. 2000) {
+        g.creeps_[c].stunTicks = 100;
+        g.creeps_[c].hp = g.creeps_[c].maxHp;
+        g.advance();
+        foreach (ref e; g.events) {
+            hit |= e.kind == EventKind.towerHit;
+            down |= e.kind == EventKind.towerDown;
+        }
+        if (down)
+            break;
+    }
+    assert(hit && down && Game.wrecked(*t) && t.crew == noCrew && g.injuries.length <= 1);
+    immutable shots = t.shots;
+    foreach (k; 0 .. 60)
+        g.advance();
+    assert(t.shots == shots);
+    // Mid-wave there is no repairing; between waves there is.
+    assert(g.apply(GameCommand(CommandType.repair, TowerKind.arrow, 0, 8, 2)) == CommandError.wrongPhase);
+    g.status = GameStatus.waiting;
+    g.gold = 1000;
+    immutable cost = g.repairCost(*t);
+    assert(cost > 0 && cost <= t.invested);
+    assert(g.apply(GameCommand(CommandType.repair, TowerKind.arrow, 0, 8, 2)) == CommandError.none);
+    assert(t.hp == t.maxHp && g.gold == 1000 - cost);
+    assert(g.apply(GameCommand(CommandType.repair, TowerKind.arrow, 0, 8, 2)) == CommandError.intact);
+}
+
+@nogc nothrow unittest {
+    // Whether a crew is hurt is decided by the seed: many crews, some hurt, none twice.
+    int hurt = 0, games = 0;
+    foreach (seed; 1 .. 40u) {
+        Game g;
+        straightBoard(g, seed);
+        g.status = GameStatus.wave;
+        g.gold = 10_000;
+        assert(g.apply(placeCmd(TowerKind.cannon, 8, 2)) == CommandError.none);
+        g.setCrew(0, 3);
+        immutable c = dropCreep(g, cast(CreepKind)defaultCatalog.findCreep("ram"), 8);
+        foreach (k; 0 .. 3000) {
+            g.creeps_[c].stunTicks = 100;
+            g.creeps_[c].hp = g.creeps_[c].maxHp;
+            g.advance();
+            if (Game.wrecked(*g.towerAt(8, 2)))
+                break;
+        }
+        hurt += cast(int)g.injuries.length;
+        games++;
+        assert(g.injuries.length <= 1);
+    }
+    // Two chances of 20% and 60%: about two in three crews are hurt.
+    assert(hurt > games / 3 && hurt < games);
 }

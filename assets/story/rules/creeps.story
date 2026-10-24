@@ -6,6 +6,8 @@
 # (ticks before the next spawn) and slowResist (percent of slows and stuns shrugged off).
 # A wave picks kinds unlocked by its number by `pickWeight`, in runs of `pack` (0: 1 to 3);
 # a `boss` comes alone every economy.bossEvery waves.
+# Siege creeps (siegeDamage) strike the nearest tower within siegeRange every siegeCooldown ticks
+# as they walk; a wrecked tower stops firing, and its crew may be hurt.
 
 data creeps = [
     {id: "grunt", look: :grunt, unlockWave: 1, pickWeight: 5,
@@ -18,4 +20,10 @@ data creeps = [
      stats: {name: "Swarmling", hp: 18, speed: 44, bounty: 1, leak: 1, cost: 3, gap: 6}},
     {id: "boss", look: :boss, boss: true,
      stats: {name: "Boss", hp: 1500, speed: 16, armor: 30, bounty: 150, leak: 5, gap: 60, slowResist: 50}},
+    {id: "sapper", look: :runner, unlockWave: 7, pickWeight: 1,
+     stats: {name: "Sapper", hp: 45, speed: 40, armor: 10, bounty: 8, leak: 1, cost: 15, gap: 20,
+             siegeDamage: 6, siegeRange: 1300, siegeCooldown: 60}},
+    {id: "ram", look: :brute, unlockWave: 11, pickWeight: 1,
+     stats: {name: "Battering ram", hp: 320, speed: 18, armor: 55, bounty: 20, leak: 2, cost: 45, gap: 40,
+             slowResist: 60, siegeDamage: 20, siegeRange: 1100, siegeCooldown: 120}},
 ]

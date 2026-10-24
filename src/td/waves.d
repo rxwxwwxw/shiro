@@ -133,7 +133,7 @@ void buildWave(ref const Catalog cat, int wave, uint seed, int budget, scope con
         foreach (i; 0 .. a.count) {
             assert(a.spawns[i] == b.spawns[i]);
             assert(i == 0 || a.spawns[i].at > a.spawns[i - 1].at);
-            spent += creepTable[a.spawns[i].kind].cost;
+            spent += defaultCatalog.creep(a.spawns[i].kind).cost;
             bosses += a.spawns[i].kind == CreepKind.boss;
             // Locked kinds never show up early.
             if (wave < 6)

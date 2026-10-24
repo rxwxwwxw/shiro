@@ -151,6 +151,17 @@ struct ViewerState {
     bool story;
     /// A story file loaded, so New game can start it.
     bool storyAvailable;
+    /// Villagers who can man towers this visit: their crew ids (story speaker indexes) and names.
+    ubyte[32] crewIds;
+    const(char)[][32] crewNames;
+    int numCrew;
+    /// Name of crew id `id` ("nobody" for none).
+    const(char)[] crewName(int id) const @nogc nothrow pure @safe {
+        foreach (i; 0 .. numCrew)
+            if (crewIds[i] == id)
+                return crewNames[i];
+        return "nobody";
+    }
 
     /// Menu on screen, where Back from the settings returns to, and the open settings tab.
     Screen screen;
