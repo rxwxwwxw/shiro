@@ -38,6 +38,7 @@ import story.compile;
 import story.state;
 import story.td_link;
 import td.bot;
+import td.board : CellFlag, TerraOp;
 import td.catalog : Catalog;
 import td.defs : cellUnits, halfHex, rowUnits, ticksPerSecond, TowerKind;
 import td.game;
@@ -227,7 +228,10 @@ private struct Viewer {
             }
         }
         if (clickPending) {
-            if (state.buildKind >= 0 && state.hoverCol >= 0)
+            if (state.terraTool >= 0 && state.hoverCol >= 0)
+                gameQueue.push(GameCommand(CommandType.terraform, TowerKind.arrow,
+                        cast(ubyte)state.terraTool, state.hoverCol, state.hoverRow));
+            else if (state.buildKind >= 0 && state.hoverCol >= 0)
                 gameQueue.push(GameCommand(CommandType.place, cast(TowerKind)state.buildKind, 0,
                         state.hoverCol, state.hoverRow));
             else {
@@ -254,7 +258,22 @@ private struct Viewer {
         static immutable Marker canBuild = Marker(SDL_FColor(0.3f, 1, 0.4f, 0.25f), SDL_FColor(0.4f, 1, 0.5f, 1), 3);
         static immutable Marker cannotBuild = Marker(SDL_FColor(1, 0.25f, 0.2f, 0.25f),
                 SDL_FColor(1, 0.3f, 0.25f, 1), 3);
-        if (state.buildKind >= 0 && game.active)
+        // Earthworks: barricades and raised or lowered ground (the tiles themselves keep their look).
+        static immutable Marker blocked = Marker(SDL_FColor(0.55f, 0.35f, 0.15f, 0.55f),
+                SDL_FColor(0.35f, 0.2f, 0.05f, 1), 3);
+        static immutable Marker earth = Marker(SDL_FColor(0.75f, 0.65f, 0.35f, 0.25f),
+                SDL_FColor(0.6f, 0.5f, 0.2f, 0.8f), 2);
+        if (game.active)
+            foreach (ref ed; game.edits) {
+                immutable i = cast(size_t)ed.row * game.board.rect.cols + ed.col;
+                if (game.board.flagsAt(i) & CellFlag.barricade)
+                    mark(ed.col, ed.row, blocked);
+                else if (ed.op == TerraOp.raise || ed.op == TerraOp.lower)
+                    mark(ed.col, ed.row, earth);
+            }
+        if (state.terraTool >= 0 && game.active)
+            mark(state.hoverCol, state.hoverRow, hover);
+        else if (state.buildKind >= 0 && game.active)
             mark(state.hoverCol, state.hoverRow, game.canPlace(cast(TowerKind)state.buildKind,
                     state.hoverCol, state.hoverRow) == CommandError.none ? canBuild : cannotBuild);
         else if (state.hoverCol != state.selCol || state.hoverRow != state.selRow)
@@ -318,6 +337,9 @@ private struct Viewer {
                 fitView();
                 continue;
             }
+            // Digging takes time as well as gold.
+            if (e.kind == EventKind.terraformed && state.story)
+                campaign.act("dig", 1);
             if (e.kind != EventKind.built && e.kind != EventKind.upgraded && e.kind != EventKind.sold)
                 continue;
             immutable row = e.y / rowUnits;
@@ -953,6 +975,7 @@ private struct Viewer {
                 if (game.active && (k >= game.catalog.numTowers || (game.modifiers.lockedKinds & (1 << k))))
                     break;
                 state.buildKind = state.buildKind == k ? -1 : k;
+                state.terraTool = -1;
                 break;
             case SDLK_U:
                 upgradeSelected(-1);

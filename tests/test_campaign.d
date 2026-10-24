@@ -130,6 +130,12 @@ private void runBattlefield(ref const StoryProgram p, ref StoryState st, ref Rep
             fort.restore(plan);
             persisted &= plan.towers.length == fort.numTowers;
             plan.startPlanning();
+            // One earthwork a week, before the gold goes on towers: raise the first open ground that takes it.
+            dug: foreach (row; 0 .. plan.board.rect.rows)
+                foreach (col; 0 .. plan.board.rect.cols)
+                    if (plan.apply(GameCommand(CommandType.terraform, TowerKind.arrow, 0, col,
+                            row)) == CommandError.none)
+                        break dug;
             Bot bot;
             bot.setup(plan);
             foreach (k; 0 .. 40)
@@ -174,6 +180,7 @@ private void runBattlefield(ref const StoryProgram p, ref StoryState st, ref Rep
             Game battle;
             battle.start(*s, seed, mods);
             fort.restore(battle);
+            persisted &= battle.edits.length == fort.numEdits && fort.numEdits == week + 1;
             applyCrews(battle, p, st);
             int manned = 0;
             foreach (ref t; battle.towers)

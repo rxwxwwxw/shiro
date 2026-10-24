@@ -90,7 +90,7 @@ CONFIG_VIEWER_BIN := $(CONFIG_BIN_DIR)/shiro_viewer$(EXE)
 VIEWER_BIN := $(BIN_DIR)/shiro_viewer$(EXE)
 TEST_BIN := $(CONFIG_BIN_DIR)/test_runner$(EXE)
 
-BENCH_NAMES := bench_propagation bench_wfc_solve bench_routes bench_td_tick bench_village_gen bench_scale bench_story bench_director
+BENCH_NAMES := bench_propagation bench_wfc_solve bench_routes bench_td_tick bench_village_gen bench_scale bench_story bench_director bench_terraform
 BENCH_BINS := $(addprefix $(CONFIG_BENCH_DIR)/,$(addsuffix $(EXE),$(BENCH_NAMES)))
 
 # -----------------------------------------------------------------------------
@@ -430,6 +430,7 @@ benchmarks: $(BENCH_BINS)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_village_gen$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_story$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_director$(EXE)
+	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_terraform$(EXE)
 	$(RUN_DIR)$(CONFIG_BENCH_DIR)/bench_scale$(EXE) 8 $(SCALE_CELLS)
 
 $(CONFIG_BENCH_DIR)/%$(EXE): benchmarks/%.d $(D_SRCS) | $(CONFIG_BENCH_DIR) $(OBJ_DIR)

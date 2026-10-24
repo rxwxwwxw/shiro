@@ -10,6 +10,7 @@ data campaign = {weeks: 6, wavesPerBattle: 5}
 data actions = {
     rest: 1,
     field: 1,
+    dig: 1,
 }
 
 on day mon:

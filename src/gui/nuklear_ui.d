@@ -78,11 +78,11 @@ private bool section(nk_context* ctx, const(char)* title, int id, bool open) @no
             ? nk_collapse_states.NK_MAXIMIZED : nk_collapse_states.NK_MINIMIZED, title, 0, id);
 }
 
-private immutable char*[13] errorText = [
-    "", "Outside the map", "Can't build there", "Already a tower there",
-    "Mines go on gold veins only", "Not enough gold", "No tower there",
-    "Fully upgraded", "Not now", "Too many towers", "Still in the fog", "Not unlocked yet",
-    "Nothing to repair"
+private immutable char*[15] errorText = [
+    "", "Outside the map", "Can't build there", "Already a tower there", "Mines go on gold veins only",
+    "Not enough gold", "No tower there", "Fully upgraded", "Not now", "Too many towers",
+    "Still in the fog", "Not unlocked yet", "Nothing to repair", "No earthwork possible there",
+    "That would cut the road off"
 ];
 
 private immutable char*[3] targetingNames = ["First", "Strong", "Close"];
@@ -200,8 +200,10 @@ private void buildButton(nk_context* ctx, ref ViewerState st, ref const Game g, 
     }
     if (off)
         nk_widget_disable_begin(ctx);
-    if (nk_button_label(ctx, buf.ptr))
+    if (nk_button_label(ctx, buf.ptr)) {
         st.buildKind = st.buildKind == k ? -1 : k;
+        st.terraTool = -1;
+    }
     if (off)
         nk_widget_disable_end(ctx);
 }
@@ -662,6 +664,22 @@ void drawHud(ref NuklearContext ui, ref ViewerState st, ref CommandQueue q, ref 
         labelf(ctx, "More of the map opens after wave %d", (g.board.stage + 1) * g.wavesPerStage);
         nk_end(ctx);
     }
+
+    // Earthworks, midweek.
+    if (g.status == GameStatus.planning && hudWindow(ctx, "hud_terra", 10, viewH - 120, 300, 56)) {
+        static immutable char*[4] tools = ["Raise", "Lower", "Barricade", "Clear"];
+        nk_layout_row_dynamic(ctx, 18, 1);
+        labelf(ctx, "Earthworks: %d gold each", g.catalog.econ.terraformGold);
+        nk_layout_row_dynamic(ctx, 24, 4);
+        foreach (k; 0 .. 4)
+            if (nk_option_label(ctx, tools[k], st.terraTool == k)) {
+                if (st.terraTool != k)
+                    st.buildKind = -1;
+                st.terraTool = k;
+            }
+        nk_end(ctx);
+    } else if (g.status != GameStatus.planning)
+        st.terraTool = -1;
 
     // Build bar.
     immutable bw = viewW - 20 < 760 ? viewW - 20 : 760;

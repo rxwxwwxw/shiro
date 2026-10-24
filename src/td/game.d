@@ -146,8 +146,18 @@ enum EventKind : ubyte {
     /// A tower's crew was hurt: a = crew; (x, y) tower.
     crewInjured,
     /// value = gold paid for repairs; (x, y) tower.
-    repaired
+    repaired,
+    /// An earthwork: a = TerraOp; (x, y) the cell.
+    terraformed
 }
+
+/// One earthwork, as the battlefield remembers it.
+struct TerraEdit {
+    TerraOp op;
+    int col, row;
+}
+
+enum int maxTerraEdits = 256;
 
 struct SimEvent {
     EventKind kind;
@@ -175,7 +185,9 @@ enum CommandType : ubyte {
     /// Puts crew `arg` on the tower (taking them off any other); noCrew sends its crew home.
     assignCrew,
     /// Mends a damaged or wrecked tower for gold (not while a wave is on).
-    repair
+    repair,
+    /// Earthwork `arg` (a TerraOp) on the cell, midweek only.
+    terraform
 }
 
 struct GameCommand {
@@ -204,7 +216,11 @@ enum CommandError : ubyte {
     /// The story has not unlocked this tower kind yet.
     locked,
     /// Nothing to repair.
-    intact
+    intact,
+    /// No earthwork possible there (wrong ground, or as high or low as it goes).
+    badGround,
+    /// A barricade there would leave creeps no way to a sink.
+    cutsRoad
 }
 
 /// Adjustments a run starts with, decided outside the simulation (the village story). The
@@ -243,6 +259,9 @@ struct Game {
     private int waveSpawned, waveTick;
     private uint tick_, seed_, serials;
     private RunModifiers mods_;
+    /// Earthworks made on this board, in order (replayed from saves too).
+    private TerraEdit[maxTerraEdits] edits_;
+    private int numEdits_;
     /// Crews hurt this game, in order (a crew appears once).
     private ubyte[64] injured_;
     private int numInjured_;
@@ -345,6 +364,7 @@ struct Game {
         creepsAlive = killed = leaked = 0;
         droppedEvents = 0;
         numInjured_ = 0;
+        numEdits_ = 0;
         reachSum_ = reachCount_ = 0;
     }
 
@@ -406,6 +426,28 @@ struct Game {
     /// How far creeps got before they died or leaked, on average (permille of their road).
     int reachPermille() const @nogc nothrow pure @safe {
         return reachCount_ ? cast(int)(reachSum_ / reachCount_) : 0;
+    }
+
+    const(TerraEdit)[] edits() const return @nogc nothrow pure @safe {
+        return edits_[0 .. numEdits_];
+    }
+
+    /// Makes an earthwork without charging for it (replaying a save); false when it does not fit.
+    bool replayEdit(TerraEdit e) @nogc nothrow @trusted {
+        if (!active || numEdits_ == maxTerraEdits || towerAt(e.col, e.row) !is null
+                || board_.terraform(e.op, e.col, e.row) != TerraError.none)
+            return false;
+        edits_[numEdits_++] = e;
+        refreshHighGround();
+        return true;
+    }
+
+    /// Range bonuses follow the ground.
+    private void refreshHighGround() @nogc nothrow @trusted {
+        foreach (i; 0 .. numTowers_)
+            if (towers_[i].alive)
+                towers_[i].rangePct = board_.highGroundPct(towers_[i].cell,
+                        cat_.econ.highGroundPctPerLevel, cat_.econ.highGroundCapPct);
     }
 
     /// Crews hurt so far this game (each once).
@@ -547,6 +589,7 @@ struct Game {
         }
 
         put(catHash_);
+        put(numEdits_);
         put(tick_);
         put(gold);
         put(lives);
@@ -649,6 +692,31 @@ struct Game {
                 gold -= cost;
                 t.hp = t.maxHp;
                 emit(SimEvent(EventKind.repaired, t.kind, t.stage, t.x, t.y, 0, 0, cost));
+                return CommandError.none;
+            }
+        case CommandType.terraform: {
+                if (status != GameStatus.planning)
+                    return CommandError.wrongPhase;
+                if (!board_.inside(cmd.col, cmd.row))
+                    return CommandError.outside;
+                if (towerAt(cmd.col, cmd.row) !is null)
+                    return CommandError.occupied;
+                if (numEdits_ == maxTerraEdits)
+                    return CommandError.full;
+                if (gold < cat_.econ.terraformGold)
+                    return CommandError.noGold;
+                immutable op = cast(TerraOp)(cmd.arg % 4);
+                immutable err = board_.terraform(op, cmd.col, cmd.row);
+                if (err == TerraError.cutsRoad)
+                    return CommandError.cutsRoad;
+                if (err != TerraError.none)
+                    return CommandError.badGround;
+                gold -= cat_.econ.terraformGold;
+                edits_[numEdits_++] = TerraEdit(op, cmd.col, cmd.row);
+                refreshHighGround();
+                int x, y;
+                cellWorld(cmd.col, cmd.row, x, y);
+                emit(SimEvent(EventKind.terraformed, op, 0, x, y, 0, 0, cat_.econ.terraformGold));
                 return CommandError.none;
             }
         case CommandType.startWave:
@@ -1874,4 +1942,72 @@ version (unittest) {
     }
     // Two chances of 20% and 60%: about two in three crews are hurt.
     assert(hurt > games / 3 && hurt < games);
+}
+
+@nogc nothrow unittest {
+    // Earthworks, midweek only: raised ground gives a tower more range, a barricade on one of two
+    // routes sends creeps the other way, and one that would cut the road off is refused.
+    Game g;
+    auto b = &g.boardForSetup();
+    b.allocate(MapRect(11, 5));
+    enum ubyte walk = CellFlag.walk | CellFlag.road;
+    b.setCell(1, 2, walk | CellFlag.source);
+    b.setCell(9, 2, walk | CellFlag.sink);
+    foreach (col; 1 .. 9) {
+        b.setCell(col, 1, walk);
+        b.setCell(col, 3, walk);
+    }
+    foreach (col; 0 .. 11) {
+        b.setCell(col, 0, CellFlag.buildable);
+        b.setCell(col, 4, CellFlag.buildable);
+    }
+    b.finish(1, false);
+    g.begin(1);
+    GameCommand dig(TerraOp op, int col, int row) {
+        return GameCommand(CommandType.terraform, TowerKind.arrow, op, col, row);
+    }
+
+    assert(g.apply(dig(TerraOp.raise, 4, 0)) == CommandError.wrongPhase);
+    g.startPlanning();
+    immutable gold0 = g.gold;
+    assert(g.apply(placeCmd(TowerKind.arrow, 5, 0)) == CommandError.none);
+    immutable r0 = g.towerAt(5, 0).rangePct;
+    assert(g.apply(dig(TerraOp.raise, 5, 0)) == CommandError.occupied);
+    assert(g.apply(dig(TerraOp.raise, 5, 1)) == CommandError.badGround);
+    assert(g.apply(dig(TerraOp.lower, 4, 0)) == CommandError.badGround); // already at the bottom
+    g.apply(GameCommand(CommandType.sell, TowerKind.arrow, 0, 5, 0));
+    foreach (k; 0 .. 2)
+        assert(g.apply(dig(TerraOp.raise, 5, 0)) == CommandError.none);
+    assert(g.apply(placeCmd(TowerKind.arrow, 5, 0)) == CommandError.none);
+    assert(g.towerAt(5, 0).rangePct > r0 && g.board.levelAt(5) == 2);
+    // Barricade the upper route: every creep takes the lower one.
+    assert(g.apply(dig(TerraOp.barricade, 4, 1)) == CommandError.none);
+    assert(g.apply(dig(TerraOp.barricade, 4, 3)) == CommandError.cutsRoad);
+    assert(g.board.distAt(g.board.rect.index(offsetToCube(4, 3))) != unreachable);
+    assert(g.edits.length == 3 && g.gold < gold0);
+    g.status = GameStatus.wave;
+    foreach (k; 0 .. 20) {
+        immutable i = g.spawnAt(CreepKind.grunt, cast(uint)b.rect.index(offsetToCube(1, 2)));
+        assert(cubeToOffset(b.rect.cellAt(g.creeps_[i].next)).row == 3);
+    }
+    // A save replays the same ground on a fresh board.
+    Game h;
+    auto hb = &h.boardForSetup();
+    hb.allocate(MapRect(11, 5));
+    foreach (row; 0 .. 5)
+        foreach (col; 0 .. 11) {
+            immutable i = cast(size_t)row * 11 + col;
+            hb.setCell(col, row,
+                    b.flagsAt(i) & ~CellFlag.barricade | ((b.flagsAt(i) & CellFlag.barricade) ? CellFlag.walk : 0));
+        }
+    hb.setCell(5, 0, CellFlag.buildable, 0);
+    hb.finish(1, false);
+    h.begin(1);
+    foreach (e; g.edits)
+        assert(h.replayEdit(e));
+    assert(h.board.levelAt(5) == 2 && (h.board.flagsAt(h.board.rect.index(offsetToCube(4, 1))) & CellFlag.barricade));
+    // Taking the barricade down opens the road again.
+    h.startPlanning();
+    assert(h.apply(GameCommand(CommandType.terraform, TowerKind.arrow, TerraOp.clear, 4, 1)) == CommandError.none);
+    assert(h.board.distAt(h.board.rect.index(offsetToCube(4, 1))) != unreachable);
 }

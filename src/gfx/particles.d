@@ -331,6 +331,7 @@ struct Particles {
                     SDL_FColor(1, 0.25f, 0.2f, 1), SDL_FColor(0.8f, 0.1f, 0.1f, 0), true, -6);
             break;
         case EventKind.repaired:
+        case EventKind.terraformed:
         case EventKind.gameOver:
         case EventKind.victory:
         case EventKind.reveal:

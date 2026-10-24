@@ -138,6 +138,8 @@ struct ViewerState {
     int hoverCol = -1, hoverRow = -1, selCol = -1, selRow = -1;
     /// Tower kind being placed (a td.defs.TowerKind), or -1.
     int buildKind = -1;
+    /// Earthwork being made (a td.board.TerraOp), or -1.
+    int terraTool = -1;
     /// Game speed: 0 = paused, else ticks run at this multiple of real time.
     int speed = 1;
     /// The scripted bot plays.

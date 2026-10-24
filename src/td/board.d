@@ -23,8 +23,35 @@ enum CellFlag : ubyte {
     walk = 2,
     road = 4,
     source = 8,
-    sink = 16
+    sink = 16,
+    /// A road cell the player blocked (no longer `walk`).
+    barricade = 32
 }
+
+/// Earthworks the player can make on the battlefield.
+enum TerraOp : ubyte {
+    /// A land cell one level up (a tower there sees further), or down.
+    raise,
+    lower,
+    /// Blocks a road cell; creeps go round, if there is a way round.
+    barricade,
+    /// Takes a barricade down again.
+    clear
+}
+
+enum TerraError : ubyte {
+    none,
+    outside,
+    /// raise / lower take open land; barricade / clear take road.
+    wrongCell,
+    /// The land is already as high or as low as it goes.
+    limit,
+    /// The barricade would cut a source off from every sink.
+    cutsRoad
+}
+
+/// Highest land level (wfc tiles have five).
+enum int maxLandLevel = 4;
 
 private enum FlagBits cellBits = FlagBits(CellFlag.walk, CellFlag.source, CellFlag.sink);
 
@@ -159,6 +186,48 @@ struct Board {
     /// True if cell `i` is in play.
     bool visible(size_t i) const @nogc nothrow pure @safe {
         return window.contains(rect.cellAt(i));
+    }
+
+    /// Reshapes cell (col, row) by `op`; the distance field follows. Nothing changes on an error.
+    TerraError terraform(TerraOp op, int col, int row) @nogc nothrow @trusted {
+        if (!inside(col, row))
+            return TerraError.outside;
+        immutable i = cast(size_t)row * rect.cols + col;
+        immutable f = flags[i];
+        final switch (op) {
+        case TerraOp.raise:
+        case TerraOp.lower:
+            if (!(f & CellFlag.buildable)
+                    || (f & (CellFlag.walk | CellFlag.road)))
+                return TerraError.wrongCell;
+            if (op == TerraOp.raise ? levels[i] >= maxLandLevel : levels[i] == 0)
+                return TerraError.limit;
+            levels[i] = cast(ubyte)(op == TerraOp.raise ? levels[i] + 1 : levels[i] - 1);
+            return TerraError.none;
+        case TerraOp.barricade: {
+                if ((f & (CellFlag.walk | CellFlag.road)) != (CellFlag.walk | CellFlag.road)
+                        || (f & (CellFlag.source | CellFlag.sink)))
+                    return TerraError.wrongCell;
+                CubeCoord[maxSources] before = sources;
+                immutable had = numSources;
+                flags[i] = worldFlags[i] = cast(ubyte)((f & ~CellFlag.walk) | CellFlag.barricade);
+                computeSinkDist();
+                foreach (k; 0 .. had)
+                    if (sinkDist[rect.index(before[k])] == unreachable) {
+                        flags[i] = worldFlags[i] = f;
+                        finish(0, false);
+                        return TerraError.cutsRoad;
+                    }
+                finish(0, false);
+                return TerraError.none;
+            }
+        case TerraOp.clear:
+            if (!(f & CellFlag.barricade))
+                return TerraError.wrongCell;
+            flags[i] = worldFlags[i] = cast(ubyte)((f & ~CellFlag.barricade) | CellFlag.walk);
+            finish(0, false);
+            return TerraError.none;
+        }
     }
 
     /// Test hook: sets one cell.

@@ -78,6 +78,8 @@ struct Economy {
     int injuryAtHalfPct = 20, injuryAtWreckPct = 60;
     /// Repairs cost this percent of what the tower is worth, in proportion to the damage.
     int repairPct = 50;
+    /// Gold an earthwork (raising, lowering, a barricade) costs.
+    int terraformGold = 40;
 }
 
 struct Catalog {

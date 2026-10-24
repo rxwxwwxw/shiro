@@ -29,12 +29,16 @@ struct Fort {
     int gold;
     /// Battles fought so far (Saturday waves continue from them).
     int battles;
+    /// Earthworks on the battlefield, in the order they were made.
+    TerraEdit[maxTerraEdits] edits;
+    int numEdits;
 
     /// A fresh campaign: no towers, the rules' starting gold.
     void begin(ref const Catalog cat) @nogc nothrow pure @safe {
         numTowers = 0;
         gold = cat.econ.startGold;
         battles = 0;
+        numEdits = 0;
     }
 
     /// Keeps the game's towers and gold (after a visit or a battle).
@@ -46,10 +50,15 @@ struct Fort {
             towers[numTowers++] = FortTower(t.col, t.row, t.kind, t.stage, t.targeting, t.invested, t.hp, t.crew);
         }
         gold = g.gold;
+        numEdits = cast(int)g.edits.length;
+        edits[0 .. numEdits] = g.edits[];
     }
 
     /// Puts the towers into `g` (just begun on the battlefield) and sets its gold.
     void restore(ref Game g) const @nogc nothrow @safe {
+        // The ground first: towers stand on it.
+        foreach (ref e; edits[0 .. numEdits])
+            g.replayEdit(e);
         foreach (ref t; towers[0 .. numTowers])
             g.restoreTower(t.kind, t.stage, t.col, t.row, t.targeting, t.invested, t.hp, t.crew);
         g.gold = gold;
@@ -72,6 +81,8 @@ struct Fort {
         put(numTowers);
         put(gold);
         put(battles);
+        foreach (ref e; edits[0 .. numEdits])
+            put(e.op * 1_000_000_000L + e.col * 65_536 + e.row);
         foreach (ref t; towers[0 .. numTowers]) {
             put(t.col * 65_536 + t.row);
             put(t.kind * 64 + t.stage);
